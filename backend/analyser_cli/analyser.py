@@ -69,12 +69,12 @@ class Analyser:
                 raise ValueError(f"Position {position} in mutation {i+1} is out of bounds. "
                                f"Sequence length is {sequence_length}")
             
-            base = mutation['base'].upper()
-            if not isinstance(mutation['base'], str):
+            base = mutation['base']
+            if not isinstance(base, str):
                 raise TypeError(f"Base in mutation {i+1} must be a string")
             if len(base) != 1:
                 raise ValueError(f"Base in mutation {i+1} must be a single character")
-            if base not in valid_bases:
+            if base.upper() not in valid_bases:
                 raise ValueError(f"Base '{base}' in mutation {i+1} is not a valid DNA nucleotide (A, T, G, C)")
         
         # Apply mutations if all validations pass

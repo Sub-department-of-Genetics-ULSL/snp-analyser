@@ -3,6 +3,7 @@ from Bio import SeqIO
 from Bio.Seq import Seq, MutableSeq
 from Bio.Data import CodonTable
 
+
 MITOCHONDRIAL_TABLE = CodonTable.unambiguous_dna_by_name["Vertebrate Mitochondrial"]
 STANDARD_TABLE = CodonTable.unambiguous_dna_by_name["Standard"]
 

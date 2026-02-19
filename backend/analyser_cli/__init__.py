@@ -8,6 +8,7 @@ including amino acid translation effects and reporting capabilities.
 from .analyser import Analyser
 from .reporter import Reporter, SubReport, ReportFormatter
 from .fasta_reader import FastaReader
+from .data_manager import DataManager
 
 __all__ = [
     'Analyser',
@@ -15,6 +16,7 @@ __all__ = [
     'SubReport',
     'ReportFormatter',
     "FastaReader",
+    "DataManager",
 ]
 
 __version__ = "0.1.0"

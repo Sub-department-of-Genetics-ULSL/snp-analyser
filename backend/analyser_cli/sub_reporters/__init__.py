@@ -9,9 +9,11 @@ analysis capabilities for different types of genetic analysis.
 """
 
 from .mutation_effects import MutationEffectsReport
+from .physicochemical_properties import PhysicochemicalProperties
 
 __all__ = [
-    'MutationEffectsReport'
+    'MutationEffectsReport',
+    'PhysicochemicalProperties',
 ]
 
 __version__ = "0.1.0"

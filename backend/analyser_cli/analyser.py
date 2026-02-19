@@ -1,8 +1,6 @@
 import Bio
-from Bio import SeqIO
 from Bio.Seq import Seq, MutableSeq
 from Bio.Data import CodonTable
-
 
 MITOCHONDRIAL_TABLE = CodonTable.unambiguous_dna_by_name["Vertebrate Mitochondrial"]
 STANDARD_TABLE = CodonTable.unambiguous_dna_by_name["Standard"]
@@ -24,7 +22,7 @@ class Analyser:
     
     Example:
         >>> analyser = Analyser("ATGCGATCG", dna_type="mitochondrial")
-        >>> mutations = [{"position": 3, "base": "T"}]
+        >>> mutations = [{"type": "sub", "position": 3, "alt": "T"}]
         >>> analyser.apply_mutations(mutations)
         >>> print(analyser.amino_acid_translation)
         >>> print(analyser.mutated_amino_acid_translation)
@@ -33,9 +31,13 @@ class Analyser:
     def __init__(self, input_sequence: str, dna_type: str = "mitochondrial"):
         self.dna_type = dna_type
         self.input_sequence = Seq(input_sequence)
-        self.amino_acid_translation = self.input_sequence.translate(
-            table=MITOCHONDRIAL_TABLE if dna_type == "mitochondrial" else STANDARD_TABLE
-        )
+        try:
+            self.amino_acid_translation = self.input_sequence.translate(
+                table=MITOCHONDRIAL_TABLE if dna_type == "mitochondrial" else STANDARD_TABLE
+            )
+        except:
+            self.amino_acid_translation = Seq("")
+            
         self.mutated_sequence = None
         self.mutated_amino_acid_translation = None
 
@@ -43,48 +45,41 @@ class Analyser:
         """Apply mutations to input sequence and store result.
         
         Args:
-            mutations: List of dictionaries containing 'position' (1-based) and 'base' keys.
+            mutations: List of dictionaries containing 'position' (1-based), 'type' (sub, del, ins), 
+                      'ref' (optional), and 'alt' keys.
             
         Raises:
-            ValueError: If mutations list is empty, positions are invalid, or bases are invalid.
-            TypeError: If mutation format is incorrect.
+            ValueError: If mutations list is empty.
         """
         if not mutations:
             raise ValueError("Mutations list cannot be empty")
         
-        # Validate mutations format and content
-        valid_bases = set('ATGC')
-        sequence_length = len(self.input_sequence)
-        
-        for i, mutation in enumerate(mutations):
-            if not isinstance(mutation, dict):
-                raise TypeError(f"Mutation {i+1} must be a dictionary")
-            
-            if 'position' not in mutation or 'base' not in mutation:
-                raise ValueError(f"Mutation {i+1} must contain 'position' and 'base' keys")
-            
-            position = mutation['position']
-            if not isinstance(position, int):
-                raise TypeError(f"Position in mutation {i+1} must be an integer")
-            if position < 1 or position > sequence_length:
-                raise ValueError(f"Position {position} in mutation {i+1} is out of bounds. "
-                               f"Sequence length is {sequence_length}")
-            
-            base = mutation['base']
-            if not isinstance(base, str):
-                raise TypeError(f"Base in mutation {i+1} must be a string")
-            if len(base) != 1:
-                raise ValueError(f"Base in mutation {i+1} must be a single character")
-            if base.upper() not in valid_bases:
-                raise ValueError(f"Base '{base}' in mutation {i+1} is not a valid DNA nucleotide (A, T, G, C)")
-        
-        # Apply mutations if all validations pass
+        sorted_mutations = sorted(mutations, key=lambda x: x['position'], reverse=True)
         mutated_seq = MutableSeq(str(self.input_sequence))
-        for mutation in mutations:
-            pos = mutation["position"] - 1  # Given positions start at 1
-            new_base = mutation["base"].upper()
-            mutated_seq[pos] = new_base
+        
+        for mutation in sorted_mutations:
+            position_idx = mutation['position'] - 1
+            mutation_type = mutation.get('type', 'sub')
+            
+            if position_idx < 0:
+                continue
+
+            if mutation_type == 'sub':
+                if position_idx < len(mutated_seq):
+                    mutated_seq[position_idx] = mutation['alt']
+            
+            elif mutation_type == 'del':
+                if position_idx < len(mutated_seq):
+                    del mutated_seq[position_idx]
+            
+            elif mutation_type == 'ins':
+                insert_idx = position_idx + 1
+                seq_to_insert = mutation['alt']
+                mutated_seq[insert_idx:insert_idx] = seq_to_insert
+
         self.mutated_sequence = Seq(str(mutated_seq))
-        self.mutated_amino_acid_translation = self.mutated_sequence.translate(
+        
+        valid_len = (len(self.mutated_sequence) // 3) * 3
+        self.mutated_amino_acid_translation = self.mutated_sequence[:valid_len].translate(
             table=MITOCHONDRIAL_TABLE if self.dna_type == "mitochondrial" else STANDARD_TABLE
         )

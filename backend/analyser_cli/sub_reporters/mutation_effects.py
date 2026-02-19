@@ -25,32 +25,45 @@ class MutationEffectsReport(SubReport):
             ReportFormatter.format_detail_separator()
         ]
         
-        # Group mutations by codon (3-nucleotide groups)
         codon_effects = self._analyze_codon_effects(analyser, mutations)
         
         for i, mutation in enumerate(mutations, 1):
             pos = mutation["position"]
-            original_base = str(analyser.input_sequence[pos - 1])
-            new_base = mutation["base"].upper()
+            mut_type = mutation.get("type", "sub")
+            
+            if mut_type == "sub":
+                original_base = mutation.get("ref") or str(analyser.input_sequence[pos - 1])
+                new_base = mutation.get("alt", "?")
+                change_str = f"{original_base} -> {new_base}"
+            elif mut_type == "del":
+                original_base = mutation.get("ref") or str(analyser.input_sequence[pos - 1])
+                change_str = f"Deletion of {original_base}"
+            elif mut_type == "ins":
+                inserted_seq = mutation.get("alt", "?")
+                change_str = f"Insertion of {inserted_seq}"
+            else:
+                change_str = "Unknown mutation type"
             
             report_lines.extend([
                 "",
-                f"Mutation #{i}:",
+                f"Mutation #{i} ({mut_type.upper()}):",
                 ReportFormatter.format_key_value("Position", str(pos), indent=2),
-                ReportFormatter.format_key_value("Change", f"{original_base} → {new_base}", indent=2),
+                ReportFormatter.format_key_value("Change", change_str, indent=2),
                 ReportFormatter.format_key_value("Codon Position", self._get_codon_position(pos), indent=2),
             ])
             
-            # Add amino acid change information
             if pos in codon_effects:
                 effect = codon_effects[pos]
                 report_lines.extend([
-                    ReportFormatter.format_key_value("Codon", f"{effect['original_codon']} → {effect['mutated_codon']}", indent=2),
-                    ReportFormatter.format_key_value("Amino Acid", f"{effect['original_aa']} → {effect['mutated_aa']}", indent=2),
+                    ReportFormatter.format_key_value("Codon", f"{effect['original_codon']} -> {effect['mutated_codon']}", indent=2),
+                    ReportFormatter.format_key_value("Amino Acid", f"{effect['original_aa']} -> {effect['mutated_aa']}", indent=2),
                     ReportFormatter.format_key_value("Effect Type", effect['effect_type'], indent=2)
                 ])
+            elif mut_type != "sub":
+                report_lines.append(
+                    ReportFormatter.format_key_value("Effect Type", "Indel (potential frameshift)", indent=2)
+                )
         
-        # Add summary
         mutated_length = len(analyser.mutated_amino_acid_translation) if analyser.mutated_amino_acid_translation else 0
         report_lines.extend([
             "",
@@ -61,7 +74,7 @@ class MutationEffectsReport(SubReport):
             ReportFormatter.format_key_value("Original", str(analyser.amino_acid_translation)),
             ReportFormatter.format_key_value("Mutated", str(analyser.mutated_amino_acid_translation)),
             "",
-            ReportFormatter.format_key_value("Translation Length", f"{len(analyser.amino_acid_translation)} → {mutated_length} amino acids")
+            ReportFormatter.format_key_value("Translation Length", f"{len(analyser.amino_acid_translation)} -> {mutated_length} amino acids")
         ])
         
         return "\n".join(report_lines)
@@ -80,19 +93,20 @@ class MutationEffectsReport(SubReport):
         mutated_seq = str(analyser.mutated_sequence)
         
         for mutation in mutations:
+            if mutation.get("type", "sub") != "sub":
+                continue
+
             pos = mutation["position"]
             codon_start = ((pos - 1) // 3) * 3
             codon_end = codon_start + 3
             
-            if codon_end <= len(original_seq):
+            if codon_end <= len(original_seq) and codon_end <= len(mutated_seq):
                 original_codon = original_seq[codon_start:codon_end]
                 mutated_codon = mutated_seq[codon_start:codon_end]
                 
-                # Get amino acid translations for these codons
                 original_aa = self._translate_codon(original_codon, analyser.dna_type)
                 mutated_aa = self._translate_codon(mutated_codon, analyser.dna_type)
                 
-                # Determine effect type
                 if original_aa == mutated_aa:
                     effect_type = "Silent (synonymous)"
                 elif mutated_aa == "*":

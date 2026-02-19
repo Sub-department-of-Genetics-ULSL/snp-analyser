@@ -1,7 +1,7 @@
 from typing import Dict, List, Optional
 from .analyser import Analyser
 from .report_base import SubReport, ReportFormatter
-from .sub_reporters import MutationEffectsReport
+from .sub_reporters import MutationEffectsReport, PhysicochemicalProperties
 
 
 class Reporter:
@@ -12,6 +12,7 @@ class Reporter:
         self.sub_reports: Dict[str, SubReport] = {}
         # Add default sub-reports
         self.add_sub_report(MutationEffectsReport())
+        self.add_sub_report(PhysicochemicalProperties())
     
     def add_sub_report(self, sub_report: SubReport) -> None:
         """Add a new sub-report to the reporter.

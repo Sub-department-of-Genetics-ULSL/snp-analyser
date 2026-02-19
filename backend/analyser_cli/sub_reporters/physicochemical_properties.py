@@ -48,4 +48,3 @@ class PhysicochemicalProperties(SubReport):
                 ReportFormatter.format_detail_separator(),
             ])
         return "\n".join(report_lines[:-1])  # Assure that the last separator is not included, for aestetic reasons
- 

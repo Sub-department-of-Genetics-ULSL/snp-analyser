@@ -1,3 +1,4 @@
 fastapi[standard]~=0.115.14
 biopython~=1.85
 black~=24.0.0
+rpy2~=3.6

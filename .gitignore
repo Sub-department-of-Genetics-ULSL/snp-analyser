@@ -212,7 +212,6 @@ __marimo__/
 *.gb
 
 # HelixFold runtime assets
-backend/external/
 backend/models/
 backend/analyser_backend/generated_reports/
 backend/analyser_backend/report_jobs.sqlite3

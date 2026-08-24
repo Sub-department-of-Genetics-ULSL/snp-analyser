@@ -1,0 +1,303 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>SNP Analyser Report - __TITLE_ORGANISM__ / __TITLE_GENE__</title>
+  <script src="https://cdn.jsdelivr.net/npm/ngl@latest/dist/ngl.js"></script>
+  <style>
+    :root { --paper:#f8f8f8; --ink:#111827; --muted:#4b5563; --line:#d1d5db; }
+    body { margin:0; background:var(--paper); color:var(--ink); font-family: 'JetBrains Mono', 'Fira Code', monospace; }
+    main { max-width: 1200px; margin: 0 auto; padding: 24px; }
+    h1, h2 { font-weight: 700; letter-spacing: 0.02em; margin-top: 0; }
+    .hero { display:grid; grid-template-columns: 300px 1fr; gap:16px; margin-bottom: 16px; }
+    .card { background:#fff; border:1px solid var(--line); border-radius: 18px; padding:14px; }
+    .sidebar { display:flex; flex-direction:column; gap:12px; }
+    .grid { display:grid; grid-template-columns: 1fr 1fr; gap:16px; margin-bottom: 16px; }
+    table { width:100%; border-collapse: collapse; font-size: 0.9rem; background:#fff; }
+    th, td { border: 1px solid var(--line); padding: 8px; text-align:left; vertical-align: top; }
+    pre { background:#fff; border:1px solid var(--line); border-radius: 18px; padding:12px; overflow:auto; white-space:pre-wrap; }
+    .sequence-block { overflow-wrap:anywhere; word-break:break-word; }
+    .raw-sequences { margin-top:16px; }
+    .raw-sequences summary { cursor:pointer; color:var(--muted); font-size:0.8rem; }
+    .raw-sequences h3 { font-size:0.8rem; margin:12px 0 6px; text-transform:uppercase; letter-spacing:0.06em; color:var(--muted); }
+    .viewer-shell { position: relative; border:1px solid var(--line); border-radius: 18px; background:#fff; overflow:hidden; }
+    .viewer-canvas { width:100%; height:520px; }
+    .viewer-toolbar { position:absolute; top:14px; left:14px; display:flex; flex-wrap:wrap; gap:8px; z-index:2; }
+    .viewer-button { border:1px solid rgba(17,24,39,.18); background:rgba(255,255,255,.9); color:var(--ink); border-radius:999px; padding:8px 12px; cursor:pointer; font:inherit; }
+    .viewer-button--active { background:#111827; color:#fff; border-color:#111827; }
+    .viewer-button:disabled { opacity:.45; cursor:not-allowed; }
+    .viewer-note { position:absolute; left:14px; right:14px; bottom:14px; z-index:2; background:rgba(255,255,255,.92); border:1px solid rgba(17,24,39,.12); border-radius:14px; padding:10px 12px; color:var(--muted); font-size:0.86rem; }
+    .muted { color:var(--muted); font-size: 0.9rem; }
+    .stat-list { list-style:none; padding:0; margin:0; display:flex; flex-direction:column; gap:8px; }
+    .stat-list li { display:flex; justify-content:space-between; gap:12px; }
+    .stat-list strong { text-align:right; }
+    .alignment { display:flex; flex-direction:column; gap:14px; font-size:0.82rem; line-height:1.35; font-variant-ligatures:none; font-feature-settings:"liga" 0, "calt" 0; }
+    .aln-block { display:flex; flex-direction:column; }
+    .aln-line { display:flex; align-items:baseline; gap:10px; white-space:pre; }
+    .aln-label { flex:0 0 68px; color:var(--muted); font-size:0.72rem; text-transform:uppercase; letter-spacing:0.06em; }
+    .aln-pos { flex:0 0 48px; text-align:right; color:var(--muted); font-size:0.72rem; }
+    .aln-pos-end { text-align:left; }
+    .aln-seq { flex:1 1 auto; letter-spacing:0.04em; }
+    .aln-diff { background:#fde68a; border-radius:3px; box-shadow: inset 0 -2px 0 #f59e0b; }
+    .aln-gap { background:#e5e7eb; border-radius:3px; color:var(--muted); }
+    .aln-marker { color:#b45309; }
+    .legend { display:flex; flex-wrap:wrap; gap:14px; margin:0 0 12px; padding:0; list-style:none; color:var(--muted); font-size:0.8rem; }
+    .legend span { padding:1px 5px; border-radius:3px; }
+    @media (max-width: 900px) {
+      .hero, .grid { grid-template-columns: 1fr; }
+      .viewer-canvas { height: 420px; }
+      .alignment { font-size:0.66rem; }
+      .aln-label { flex-basis:52px; }
+      .aln-pos { flex-basis:36px; }
+    }
+  </style>
+</head>
+<body>
+  <main>
+    <h1>SNP Analysis Report</h1>
+    <div class="hero">
+      <aside class="sidebar">
+        <section class="card">
+          <h2>Metadata</h2>
+          <div><strong>Organism:</strong> __ORGANISM__</div>
+          <div><strong>Gene:</strong> __GENE__</div>
+          <div><strong>Genome Range:</strong> __GENOME_RANGE__</div>
+          <div><strong>Genetic Code:</strong> __GENETIC_CODE__</div>
+          <div><strong>Generated:</strong> __GENERATED_AT__</div>
+        </section>
+        <section class="card">
+          <h2>Summary</h2>
+          <ul class="stat-list">
+            <li><span>Total mutations</span><strong>__TOTAL_MUTATIONS__</strong></li>
+            <li><span>Frameshift</span><strong>__FRAMESHIFT_MUTATIONS__</strong></li>
+            <li><span>In-frame</span><strong>__INFRAME_MUTATIONS__</strong></li>
+            <li><span>Original PDB</span><strong>__ORIGINAL_PDB_STATUS__</strong></li>
+            <li><span>Mutated PDB</span><strong>__MUTATED_PDB_STATUS__</strong></li>
+          </ul>
+        </section>
+        <section class="card">
+          <h2>Types</h2>
+          <ul class="stat-list">
+            __MUTATION_TYPE_ITEMS__
+          </ul>
+        </section>
+        __PREDICTION_SUMMARY__
+      </aside>
+
+      <section class="card">
+        <h2>Protein Change</h2>
+        <ul class="stat-list">
+          <li><span>Original length</span><strong>__ORIGINAL_PROTEIN_LENGTH__ aa</strong></li>
+          <li><span>Mutated length</span><strong>__MUTATED_PROTEIN_LENGTH__ aa</strong></li>
+          <li><span>Unchanged residues</span><strong>__IDENTICAL_RESIDUES__</strong></li>
+          <li><span>Changed residues</span><strong>__CHANGED_RESIDUES__</strong></li>
+        </ul>
+        <details class="raw-sequences">
+          <summary>Raw protein sequences</summary>
+          <h3>Original</h3>
+          <pre class="sequence-block">__AMINO_ACID_TRANSLATION__</pre>
+          <h3>Mutated</h3>
+          <pre class="sequence-block">__MUTATED_AMINO_ACID_TRANSLATION__</pre>
+        </details>
+      </section>
+    </div>
+
+    <section>
+      <h2>Protein Translation Comparison</h2>
+      <div class="card">
+        <ul class="legend">
+          <li><span class="aln-diff">A</span> changed residue</li>
+          <li><span class="aln-gap">-</span> gap (residue inserted or deleted)</li>
+          <li>positions are numbered every line, residues are grouped by five</li>
+        </ul>
+        __TRANSLATION_ALIGNMENT__
+      </div>
+    </section>
+
+    <div class="grid">
+      <section>
+        <h2>Detected Mutations</h2>
+        <table>
+          <thead><tr><th>Notation</th><th>Gene Position (c.)</th><th>Genome Position (m.)</th><th>Type</th><th>Consequence</th></tr></thead>
+          <tbody>__MUTATION_TABLE_ROWS__</tbody>
+        </table>
+      </section>
+
+      <section>
+        <h2>Viewer notes</h2>
+        <div class="card">
+          <p class="muted">
+            Toggle between the original protein, the HelixFold-predicted mutated protein, and the overlay view.
+            The overlay uses browser-side structure superposition when both PDB files are available.
+          </p>
+        </div>
+      </section>
+    </div>
+
+    <section>
+      <h2>3D Structure</h2>
+      <div class="viewer-shell">
+        <div class="viewer-toolbar" role="group" aria-label="Structure view mode">
+          <button class="viewer-button viewer-button--active" data-mode="original" type="button" __ORIGINAL_BUTTON_DISABLED__>Original protein</button>
+          <button class="viewer-button" data-mode="mutated" type="button" __MUTATED_BUTTON_DISABLED__>Mutated protein</button>
+          <button class="viewer-button" data-mode="overlay" type="button" __OVERLAY_BUTTON_DISABLED__>Overlay</button>
+        </div>
+        <div id="viewer" class="viewer-canvas" aria-label="Protein structure viewer"></div>
+        <div id="viewer-note" class="viewer-note">
+          __VIEWER_INITIAL_NOTE__
+        </div>
+      </div>
+    </section>
+
+    <section>
+      <h2>Detailed Text Report</h2>
+      <pre>__REPORT_TEXT__</pre>
+    </section>
+  </main>
+  <script>
+    const viewerPayload = __VIEWER_PAYLOAD__;
+    const viewerNote = document.getElementById('viewer-note');
+    const buttons = Array.from(document.querySelectorAll('.viewer-button'));
+    const viewerElement = document.getElementById('viewer');
+    if (!viewerElement) {
+      throw new Error('Viewer element is missing.');
+    }
+    const stage = new NGL.Stage(viewerElement, { backgroundColor: '#ffffff', quality: 'high' });
+    let activeMode = viewerPayload.original.available
+      ? (viewerPayload.mutated.available ? 'overlay' : 'original')
+      : (viewerPayload.mutated.available ? 'mutated' : 'original');
+
+    function setButtons(mode) {
+      buttons.forEach((button) => {
+        button.classList.toggle('viewer-button--active', button.dataset.mode === mode);
+      });
+    }
+
+    function loadBlob(url) {
+      return fetch(url, { cache: 'no-store' })
+        .then((response) => {
+          if (!response.ok) {
+            throw new Error('Unable to load structure file.');
+          }
+          return response.text();
+        })
+        .then((text) => new Blob([text], { type: 'text/plain' }));
+    }
+
+    function applySingleStyle(component, color) {
+      component.removeAllRepresentations();
+      component.addRepresentation('cartoon', {
+        colorScheme: 'uniform',
+        colorValue: color,
+        quality: 'high',
+      });
+      component.addRepresentation('backbone', {
+        colorScheme: 'uniform',
+        colorValue: color,
+        opacity: 0.25,
+        radiusScale: 0.7,
+      });
+    }
+
+    function applyOverlayStyle(referenceComponent, targetComponent) {
+      referenceComponent.removeAllRepresentations();
+      targetComponent.removeAllRepresentations();
+      referenceComponent.addRepresentation('cartoon', {
+        colorScheme: 'uniform',
+        colorValue: '#60a5fa',
+        opacity: 0.9,
+        quality: 'high',
+      });
+      targetComponent.addRepresentation('cartoon', {
+        colorScheme: 'uniform',
+        colorValue: '#fb923c',
+        opacity: 0.72,
+        quality: 'high',
+      });
+      referenceComponent.addRepresentation('backbone', {
+        colorScheme: 'uniform',
+        colorValue: '#60a5fa',
+        opacity: 0.2,
+        radiusScale: 0.7,
+      });
+      targetComponent.addRepresentation('backbone', {
+        colorScheme: 'uniform',
+        colorValue: '#fb923c',
+        opacity: 0.2,
+        radiusScale: 0.55,
+      });
+    }
+
+    async function renderMode(mode) {
+      activeMode = mode;
+      setButtons(mode);
+      viewerNote.textContent = 'Loading structures...';
+      stage.removeAllComponents();
+
+      try {
+        if (mode === 'original') {
+          if (!viewerPayload.original.available) {
+            throw new Error('Original structure is not available.');
+          }
+
+          const component = await stage.loadFile(await loadBlob(viewerPayload.original.url), {
+            ext: 'pdb',
+            defaultRepresentation: false,
+          });
+          applySingleStyle(component, '#60a5fa');
+        } else if (mode === 'mutated') {
+          if (!viewerPayload.mutated.available) {
+            throw new Error('Mutated structure is not available yet.');
+          }
+
+          const component = await stage.loadFile(await loadBlob(viewerPayload.mutated.url), {
+            ext: 'pdb',
+            defaultRepresentation: false,
+          });
+          applySingleStyle(component, '#fb923c');
+        } else {
+          if (!viewerPayload.original.available || !viewerPayload.mutated.available) {
+            throw new Error('Both structures are required for overlay view.');
+          }
+
+          const [referenceComponent, targetComponent] = await Promise.all([
+            stage.loadFile(await loadBlob(viewerPayload.original.url), {
+              ext: 'pdb',
+              defaultRepresentation: false,
+            }),
+            stage.loadFile(await loadBlob(viewerPayload.mutated.url), {
+              ext: 'pdb',
+              defaultRepresentation: false,
+            }),
+          ]);
+          targetComponent.superpose(referenceComponent, true, '', '');
+          applyOverlayStyle(referenceComponent, targetComponent);
+        }
+
+        stage.autoView();
+        stage.handleResize();
+        viewerNote.textContent = mode === 'overlay'
+          ? 'The overlay shows the original structure in blue and the mutated structure in orange.'
+          : mode === 'mutated'
+            ? 'This is the HelixFold-predicted mutated structure.'
+            : 'This is the original structure used for comparison.';
+      } catch (error) {
+        viewerNote.textContent = error instanceof Error ? error.message : 'Unable to render structures.';
+      }
+    }
+
+    buttons.forEach((button) => {
+      button.addEventListener('click', () => {
+        if (button.disabled) {
+          return;
+        }
+        void renderMode(button.dataset.mode);
+      });
+    });
+
+    renderMode(activeMode);
+    window.addEventListener('resize', () => stage.handleResize());
+  </script>
+</body>
+</html>

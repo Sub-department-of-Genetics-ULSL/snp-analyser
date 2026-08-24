@@ -135,7 +135,7 @@ class TestSubReport:
     @pytest.fixture
     def sample_mutations(self):
         """Create sample mutations for testing."""
-        return [{"position": 3, "base": "T"}]
+        return [{"position": 3, "alt": "T"}]
     
     def test_mock_sub_report_properties(self, mock_sub_report):
         """Test mock SubReport properties."""
@@ -177,7 +177,7 @@ class TestReporter:
     @pytest.fixture
     def sample_mutations(self):
         """Create sample mutations for testing."""
-        return [{"position": 3, "base": "T"}]
+        return [{"position": 3, "alt": "T"}]
     
     @pytest.fixture
     def mock_sub_reports(self):
@@ -336,7 +336,7 @@ class TestReporterIntegration:
     def analyser_with_mutations(self):
         """Create an Analyser instance with applied mutations."""
         analyser = Analyser("ATGCGATCGTAG", dna_type="mitochondrial")
-        mutations = [{"position": 3, "base": "T"}]
+        mutations = [{"position": 3, "alt": "T"}]
         analyser.apply_mutations(mutations)
         return analyser, mutations
     
@@ -360,9 +360,9 @@ class TestReporterIntegration:
         """Test report generation with multiple mutations."""
         analyser = Analyser("ATGCGATCGTAGCCG", dna_type="nuclear")
         mutations = [
-            {"position": 3, "base": "T"},
-            {"position": 8, "base": "A"},
-            {"position": 12, "base": "T"}
+            {"position": 3, "alt": "T"},
+            {"position": 8, "alt": "A"},
+            {"position": 12, "alt": "T"}
         ]
         analyser.apply_mutations(mutations)
         

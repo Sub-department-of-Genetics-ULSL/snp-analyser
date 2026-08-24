@@ -1,7 +1,7 @@
 from functools import partial
 from typing import Dict, List
 
-import rpy2.robjects as robjects
+from rpy2.robjects import conversion, default_converter
 from rpy2.robjects.packages import importr
 
 from ..analyser import Analyser
@@ -33,8 +33,10 @@ class PhysicochemicalProperties(SubReport):
         
         report_lines = []
         for key, value in self.properties.items():
-            original_sequence_value = list(value(str(analyser.input_sequence)))[0]
-            mutated_sequence_value = list(value(str(analyser.mutated_sequence)))[0]
+            # FastAPI runs sync endpoints in worker threads; set converter context explicitly for rpy2.
+            with conversion.localconverter(default_converter):
+                original_sequence_value = self._round_property_value(list(value(str(analyser.input_sequence)))[0])
+                mutated_sequence_value = self._round_property_value(list(value(str(analyser.mutated_sequence)))[0])
             if mutated_sequence_value > original_sequence_value:
                 change_symbol = "↑"
             elif mutated_sequence_value < original_sequence_value:
@@ -42,9 +44,19 @@ class PhysicochemicalProperties(SubReport):
             else:
                 change_symbol = "-"
             report_lines.extend([
-                ReportFormatter.format_key_value(f"{key} Original Sequence", original_sequence_value),
-                ReportFormatter.format_key_value(f"{key} Mutated Sequence", mutated_sequence_value),
+                ReportFormatter.format_key_value(
+                    f"{key} Original Sequence", self._format_property_value(original_sequence_value)
+                ),
+                ReportFormatter.format_key_value(
+                    f"{key} Mutated Sequence", self._format_property_value(mutated_sequence_value)
+                ),
                 ReportFormatter.format_key_value("Change", change_symbol),
                 ReportFormatter.format_detail_separator(),
             ])
         return "\n".join(report_lines[:-1])  # Assure that the last separator is not included, for aestetic reasons
+
+    def _round_property_value(self, value: float) -> float:
+        return round(float(value), 3)
+
+    def _format_property_value(self, value: float) -> str:
+        return f"{value:.3f}"

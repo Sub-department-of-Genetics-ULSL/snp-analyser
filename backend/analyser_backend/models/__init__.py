@@ -1,5 +1,3 @@
-from .report_data import BaseModel
+from .report_data import ReportData
 
-__all__ = [
-    "BaseModel",
-]
+__all__ = ["ReportData"]

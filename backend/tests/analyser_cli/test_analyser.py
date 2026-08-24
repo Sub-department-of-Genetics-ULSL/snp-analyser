@@ -1,6 +1,9 @@
 import pytest
 from Bio.Seq import Seq
-from analyser_cli.analyser import Analyser, MITOCHONDRIAL_TABLE, STANDARD_TABLE
+from analyser_cli.analyser import Analyser, get_codon_table
+
+MITOCHONDRIAL_TABLE = get_codon_table(2)
+STANDARD_TABLE = get_codon_table(1)
 
 
 @pytest.fixture
@@ -24,13 +27,13 @@ def sequence_with_stop():
 @pytest.fixture
 def mitochondrial_analyser(simple_sequence):
     """Fixture providing a mitochondrial Analyser instance."""
-    return Analyser(simple_sequence, dna_type="mitochondrial")
+    return Analyser(simple_sequence, dna_type="mitochondrial", transl_table=2)
 
 
 @pytest.fixture
 def nuclear_analyser(simple_sequence):
     """Fixture providing a nuclear Analyser instance."""
-    return Analyser(simple_sequence, dna_type="nuclear")
+    return Analyser(simple_sequence, dna_type="nuclear", transl_table=1)
 
 
 @pytest.fixture
@@ -43,16 +46,16 @@ def extended_analyser():
 def multiple_mutations():
     """Fixture providing multiple mutations for testing."""
     return [
-        {"position": 3, "base": "T"},
-        {"position": 6, "base": "C"},
-        {"position": 9, "base": "A"}
+        {"position": 3, "alt": "T"},
+        {"position": 6, "alt": "C"},
+        {"position": 9, "alt": "A"}
     ]
 
 
 @pytest.fixture
 def single_mutation():
     """Fixture providing a single mutation for testing."""
-    return [{"position": 3, "base": "T"}]
+    return [{"position": 3, "alt": "T"}]
 
 
 @pytest.fixture
@@ -60,15 +63,15 @@ def invalid_mutations():
     """Fixture providing various invalid mutation formats for testing."""
     return {
         "empty_list": [],
-        "non_dict": ["invalid", {"position": 1, "base": "T"}],
-        "missing_position": [{"base": "T"}],
+        "non_dict": ["invalid", {"position": 1, "alt": "T"}],
+        "missing_position": [{"alt": "T"}],
         "missing_base": [{"position": 1}],
-        "invalid_position_type": [{"position": "1", "base": "T"}],
-        "position_too_low": [{"position": 0, "base": "T"}],
-        "position_too_high": [{"position": 10, "base": "T"}],
-        "invalid_base_type": [{"position": 1, "base": 123}],
-        "invalid_base_length": [{"position": 1, "base": "AT"}],
-        "invalid_base_character": [{"position": 1, "base": "X"}]
+        "invalid_position_type": [{"position": "1", "alt": "T"}],
+        "position_too_low": [{"position": 0, "alt": "T"}],
+        "position_too_high": [{"position": 10, "alt": "T"}],
+        "invalid_base_type": [{"position": 1, "alt": 123}],
+        "invalid_base_length": [{"position": 1, "alt": "AT"}],
+        "invalid_base_character": [{"position": 1, "alt": "X"}]
     }
 
 
@@ -128,7 +131,7 @@ class TestApplyMutations:
     
     def test_mutations_case_insensitive(self, mitochondrial_analyser):
         """Test that mutations handle lowercase bases correctly."""
-        mutations = [{"position": 3, "base": "t"}]
+        mutations = [{"position": 3, "alt": "t"}]
         mitochondrial_analyser.apply_mutations(mutations)
         
         assert str(mitochondrial_analyser.mutated_sequence) == "ATTCGATCG"
@@ -141,9 +144,9 @@ class TestApplyMutations:
         
         # Change middle codon AAA to TTT
         mutations = [
-            {"position": 4, "base": "T"},
-            {"position": 5, "base": "T"},
-            {"position": 6, "base": "T"}
+            {"position": 4, "alt": "T"},
+            {"position": 5, "alt": "T"},
+            {"position": 6, "alt": "T"}
         ]
         
         analyser.apply_mutations(mutations)
@@ -173,12 +176,12 @@ class TestMutationValidation:
     
     def test_missing_position_key(self, mitochondrial_analyser, invalid_mutations):
         """Test that mutations missing 'position' key raise ValueError."""
-        with pytest.raises(ValueError, match="Mutation 1 must contain 'position' and 'base' keys"):
+        with pytest.raises(ValueError, match="Mutation 1 is missing the 'position' key"):
             mitochondrial_analyser.apply_mutations(invalid_mutations["missing_position"])
     
-    def test_missing_base_key(self, mitochondrial_analyser, invalid_mutations):
-        """Test that mutations missing 'base' key raise ValueError."""
-        with pytest.raises(ValueError, match="Mutation 1 must contain 'position' and 'base' keys"):
+    def test_missing_alt_key(self, mitochondrial_analyser, invalid_mutations):
+        """Test that mutations missing the 'alt' key raise ValueError."""
+        with pytest.raises(ValueError, match="Mutation 1 is missing the 'alt' key"):
             mitochondrial_analyser.apply_mutations(invalid_mutations["missing_base"])
     
     def test_invalid_position_type(self, mitochondrial_analyser, invalid_mutations):
@@ -211,6 +214,32 @@ class TestMutationValidation:
         with pytest.raises(ValueError, match="Base 'X' in mutation 1 is not a valid DNA nucleotide"):
             mitochondrial_analyser.apply_mutations(invalid_mutations["invalid_base_character"])
 
+    def test_deletion_does_not_need_a_base(self, mitochondrial_analyser):
+        """A deletion removes a base, so it carries no replacement for it."""
+        mitochondrial_analyser.apply_mutations([{"type": "del", "position": 3}])
+
+        assert str(mitochondrial_analyser.mutated_sequence) == "ATCGATCG"
+
+    def test_insertion_accepts_several_nucleotides(self, mitochondrial_analyser):
+        """An insertion is the only type whose base may be longer than one character."""
+        mitochondrial_analyser.apply_mutations([{"type": "ins", "position": 3, "alt": "TTT"}])
+
+        assert str(mitochondrial_analyser.mutated_sequence) == "ATGTTTCGATCG"
+
+    def test_unsupported_mutation_type_raises(self, mitochondrial_analyser):
+        """Test that a type the analyser cannot apply is rejected instead of ignored."""
+        with pytest.raises(ValueError, match="Mutation 1 has an unsupported type 'dup'"):
+            mitochondrial_analyser.apply_mutations([{"type": "dup", "position": 1, "alt": "A"}])
+
+    def test_nothing_is_applied_when_a_later_mutation_is_invalid(self, mitochondrial_analyser):
+        """The whole batch is validated before the first mutation is applied."""
+        with pytest.raises(ValueError):
+            mitochondrial_analyser.apply_mutations(
+                [{"position": 1, "alt": "T"}, {"position": 99, "alt": "G"}]
+            )
+
+        assert mitochondrial_analyser.mutated_sequence is None
+
 
 class TestDNATypes:
     """Test cases for different DNA types."""
@@ -220,8 +249,8 @@ class TestDNATypes:
         # UGA is a stop codon in standard code but codes for Trp in mitochondrial
         sequence = "TGATGATGA"
         
-        mito_analyser = Analyser(sequence, dna_type="mitochondrial")
-        nuclear_analyser = Analyser(sequence, dna_type="nuclear")
+        mito_analyser = Analyser(sequence, dna_type="mitochondrial", transl_table=2)
+        nuclear_analyser = Analyser(sequence, dna_type="nuclear", transl_table=1)
         
         mito_translation = str(mito_analyser.amino_acid_translation)
         nuclear_translation = str(nuclear_analyser.amino_acid_translation)
@@ -236,7 +265,7 @@ class TestEdgeCases:
     def test_single_nucleotide_sequence(self, single_mutation):
         """Test with a single nucleotide sequence."""
         analyser = Analyser("A")
-        mutations = [{"position": 1, "base": "T"}]
+        mutations = [{"position": 1, "alt": "T"}]
         
         analyser.apply_mutations(mutations)
         
@@ -254,7 +283,7 @@ class TestEdgeCases:
         analyser = Analyser(sequence, dna_type="nuclear")
         
         # Change AAA to TAA (stop codon)
-        mutations = [{"position": 4, "base": "T"}]
+        mutations = [{"position": 4, "alt": "T"}]
         analyser.apply_mutations(mutations)
         
         assert "*" in str(analyser.mutated_amino_acid_translation)
@@ -262,8 +291,8 @@ class TestEdgeCases:
     def test_multiple_mutations_same_position(self, mitochondrial_analyser):
         """Test multiple mutations at the same position (last one should win)."""
         mutations = [
-            {"position": 3, "base": "A"},
-            {"position": 3, "base": "T"}  # This should be the final base
+            {"position": 3, "alt": "A"},
+            {"position": 3, "alt": "T"}  # This should be the final base
         ]
         
         mitochondrial_analyser.apply_mutations(mutations)
@@ -279,10 +308,10 @@ class TestComplexScenarios:
         sequence = "AAAAAAAA"
         analyser = Analyser(sequence)
         mutations = [
-            {"position": 1, "base": "A"},
-            {"position": 2, "base": "T"},
-            {"position": 3, "base": "G"},
-            {"position": 4, "base": "C"}
+            {"position": 1, "alt": "A"},
+            {"position": 2, "alt": "T"},
+            {"position": 3, "alt": "G"},
+            {"position": 4, "alt": "C"}
         ]
         
         analyser.apply_mutations(mutations)
@@ -295,7 +324,7 @@ class TestComplexScenarios:
         
         # Apply mutations at every 3rd position
         mutations = [
-            {"position": i, "base": "A"} 
+            {"position": i, "alt": "A"} 
             for i in range(3, len(long_sequence) + 1, 3)
         ]
         analyser.apply_mutations(mutations)

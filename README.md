@@ -5,11 +5,11 @@ A comprehensive bioinformatics tool for analyzing Single Nucleotide Polymorphism
 ## ✨ Features
 
 - **DNA Sequence Analysis**: Support for both mitochondrial and nuclear DNA sequences
-- **Multi-Organism Support**: Pre-configured for human, pig, dog, and cow mitochondrial genomes
+- **Multi-Organism Support**: Pre-configured for human, dog, house mouse, zebrafish, fruit fly, and roundworm mitochondrial genomes
 - **Automatic Genome Management**: Downloads GenBank files from NCBI on demand
 - **Mutation Effect Prediction**: Analyze the impact of SNPs on amino acid sequences
 - **Multiple Mutation Types**: Support for substitutions, deletions, and insertions
-- **Codon Table Support**: Uses appropriate genetic codes (Standard and Vertebrate Mitochondrial)
+- **Codon Table Support**: Uses appropriate genetic codes (Standard, Vertebrate Mitochondrial and Invertebrate Mitochondrial)
 - **Comprehensive Reporting**: Modular reporting system with multiple analysis types
 - **Physicochemical Properties**: Analyze changes in peptide properties (requires R and Peptides package)
 - **Web Interface**: Interactive browser-based application with dual-column gene visualization
@@ -41,7 +41,28 @@ A comprehensive bioinformatics tool for analyzing Single Nucleotide Polymorphism
    pip install -r requirements.txt
    ```
 
-3. **Optional: Install R dependencies for physicochemical analysis**
+3. **Prepare backend configuration**
+   ```bash
+   cp .env.example .env
+   cd ..
+   ./scripts/setup_helixfold_single.sh
+   ```
+
+   The helper script clones HelixFold-single into `backend/external/HelixFold-single`, downloads the model weights, and prints the exact `backend/.env` values to enable it.
+   It is safe to rerun: if the repo or model already exist, the script skips them.
+   Then create a clean Python 3.11 venv inside the HelixFold repo, remove version pins from its `requirements.txt`, add `paddlepaddle`, and install the requirements there.
+
+   Example:
+   ```bash
+   cd backend/external/HelixFold-single
+   python3.11 -m venv .venv_backup
+   source .venv_backup/bin/activate
+   python -m pip install --upgrade pip
+   # edit requirements.txt: remove version pins, add paddlepaddle
+   python -m pip install -r requirements.txt
+   ```
+
+4. **Optional: Install R dependencies for physicochemical analysis**
    ```R
    # In R console
    install.packages("Peptides")
@@ -55,7 +76,7 @@ A comprehensive bioinformatics tool for analyzing Single Nucleotide Polymorphism
 from backend.analyser_cli import Analyser, Reporter
 
 # Create an analyser instance
-analyser = Analyser("ATGCGATCGTAA", dna_type="mitochondrial")
+analyser = Analyser("ATGCGATCGTAA", transl_table=2)
 
 # Define mutations (1-based positions)
 mutations = [
@@ -64,7 +85,9 @@ mutations = [
     {"type": "ins", "position": 5, "alt": "ATG"}     # Insertion
 ]
 
-# Apply mutations
+# Apply mutations. Malformed input is rejected before anything is applied:
+# an unknown type, a missing key, a position outside the sequence or a base
+# that is not A/C/G/T raises ValueError (TypeError for wrong types).
 analyser.apply_mutations(mutations)
 
 # Generate comprehensive report
@@ -93,8 +116,13 @@ gene_data = manager.get_gene_for_organism("homo_sapiens", "CYTB")
 sequence = gene_data["sequence"]
 start_pos = gene_data["startInGenome"]
 
-# Analyze the gene
-analyser = Analyser(sequence, dna_type="mitochondrial")
+# Analyze the gene with the genetic code annotated on its GenBank CDS feature
+analyser = Analyser(
+    sequence,
+    transl_table=gene_data["translTable"],
+    codon_start=gene_data["codonStart"],
+    transl_except=gene_data["translExcept"],
+)
 mutations = [{"type": "sub", "position": 10, "alt": "G"}]
 analyser.apply_mutations(mutations)
 
@@ -104,11 +132,17 @@ print(report)
 ```
 
 #### Web Interface
-
+On MacOS, if you encounter problems with loading R:
+```bash
+export R_HOME="$(R RHOME)"
+export RPY2_CFFI_MODE=ABI
+pip uninstall rpy2 rpy2-rinterface rpy2-robjects
+pip install --no-binary :all: "rpy2~=3.6"
+```
 ```bash
 # Start the web server
-cd backend
-uvicorn analyser_backend.main:app --reload
+cd backend/analyser_backend
+uvicorn main:app --reload
 
 # Open your browser to http://localhost:8000
 ```
@@ -118,8 +152,10 @@ The web interface provides:
 - **Interactive Mutation Designer**: Click on nucleotides to apply mutations
 - **Dual-Column Visualization**: Compare reference and mutated sequences side-by-side
 - **Coordinate Display**: Shows both gene-relative and genome-absolute positions
-- **Real-time Analysis**: Generate reports on-the-fly
-- **HGVS-like Notation**: Input mutations using notation like "3G>T", "del.5A", "ins.3_4ATG"
+- **Asynchronous Report Queue**: Reports are generated in background and tracked in a pending queue
+- **HTML Reports**: Completed reports open in a new browser tab
+- **3D Protein Viewer**: HTML report renders original protein structure from local PDB files (if available)
+- **HGVS DNA Notation**: Input mutations using `m.` (genome-absolute) or `c.` (gene-relative) notation like "m.5367C>T", "c.3_4insATG"
 
 
 ## 📊 Analysis Types
@@ -196,6 +232,29 @@ Change: ↓
 ================================================================================
 ```
 
+### HTML Report
+
+The web interface renders the same analysis as a self-contained HTML page that adds a
+**Protein Translation Comparison** section. The original and the mutated translation are
+aligned with a global pairwise alignment (identity scoring, gap penalties) and then printed
+one under the other:
+
+```
+ORIGINAL    1 MPMAN LLLLI VPILI AMAFL MLTER KILGY MQLRK GPNVV GPYGL LQPFA  50
+MUTATED     1 MPMAN LLLLI VPI-I AMAFL MLTER KILGY MQLCK GPNVV GPYGL LQPFA  49
+                            |                       |
+```
+
+- residues are grouped in blocks of five and wrapped into lines of 60, so nothing has to be
+  scrolled horizontally,
+- every line is numbered on both sides with its own residue positions, which stay correct
+  even when an indel shifts the mutated protein,
+- a changed residue is highlighted and marked with `|` on the line below,
+- `-` marks a gap, i.e. a residue that was inserted or deleted,
+- a "Protein Change" card summarises both lengths and the number of changed/unchanged
+  residues, and the raw sequences stay available in a collapsed `Raw protein sequences`
+  block for copy-pasting.
+
 ## 🌐 Web Interface Features
 
 - **Organism Selection**: Choose from pre-configured organisms (human, pig, dog, cow)
@@ -203,7 +262,7 @@ Change: ↓
 - **Dual-Column Visualization**: Side-by-side comparison of reference and mutated sequences
 - **Interactive Mutation Designer**: Click on nucleotides to substitute, delete, or insert
 - **Position Tooltips**: Hover to see gene-relative and genome-absolute coordinates
-- **HGVS-like Notation Input**: Batch input mutations using notation like "3G>T", "del.5A"
+- **HGVS DNA Notation Input**: Batch input mutations using `m.` or `c.` notation like "m.5367C>T", "c.3_4insATG"
 - **Real-time Analysis**: Generate comprehensive reports on-the-fly
 - **Modern Dark UI**: Professional interface optimized for long sequences
 - **Responsive Design**: Works on desktop and mobile devices
@@ -218,14 +277,26 @@ The FastAPI backend provides the following endpoints:
 - `GET /organisms/{latin_name}/{gene}/` - Get sequence data for a specific gene
 
 ### Report Generation
-- `POST /report/` - Generate analysis report
+- `POST /report/` - Generate text analysis report (legacy synchronous endpoint)
+- `POST /report/jobs` - Queue asynchronous HTML report generation
+- `GET /report/jobs` - List report generation jobs
+- `GET /report/jobs/{job_id}` - Get a single job status
   ```json
   {
     "organism": "homo_sapiens",
     "gene": "CYTB",
-    "mutations": ["14747G>A", "14766C>T", "ins.14750_14751ATG", "del.14755C"]
+    "mutations": ["m.14747G>A", "m.14766C>T", "m.14750_14751insATG", "c.5del"]
   }
   ```
+
+The job list is rebuilt from `backend/analyser_backend/generated_reports/` after restart, so completed reports stay visible.
+Report job history is also mirrored in `backend/analyser_backend/report_jobs.sqlite3`, which lets the backend restore organism, gene, mutations, and HelixFold flags after a restart.
+
+### Report and PDB storage
+- Generated HTML reports are stored in: `backend/analyser_backend/generated_reports/`
+- Report metadata SQLite DB: `backend/analyser_backend/report_jobs.sqlite3`
+- Local PDB files are served from: `backend/analyser_backend/pdb_files/`
+- Expected PDB path per report: `backend/analyser_backend/pdb_files/{organism}/{gene}.pdb`
 
 ## 🧪 Mutation Notation
 
@@ -243,14 +314,26 @@ Mutations are specified as dictionaries with the following structure:
 {"type": "ins", "position": 10, "alt": "ATG"}
 ```
 
-### Web API Format (HGVS-like)
-The web interface accepts HGVS-like notation strings:
+### Web API Format (HGVS DNA)
+The web interface accepts DNA-level HGVS notation with exactly two coordinate prefixes:
 
-- **Substitution**: `"3G>T"` (position 3, G to T)
-- **Deletion**: `"del.5A"` or `"5del"` (delete base at position 5)
-- **Insertion**: `"ins.10ATG"` or `"ins.10_11ATG"` (insert ATG after position 10)
+- **`m.`** — absolute position in the mitochondrial genome
+- **`c.`** — position relative to the start of the gene (1-based)
 
-Positions are specified using **genome-absolute coordinates** and automatically converted to gene-relative positions.
+Every mutation must carry one of these prefixes; unprefixed and legacy forms
+(`5del`, `del.5`, `ins.10_11ATG`) are rejected with HTTP 400.
+
+- **Substitution**: `"m.5367C>T"`, `"c.10A>G"`
+- **Deletion**: `"m.5444del"`, `"c.10_12del"`
+- **Insertion**: `"m.14750_14751insATG"`, `"c.10_11insATG"`
+- **Delins**: `"m.14750_14752delinsT"`, `"c.10delinsGG"`
+- **Duplication**: `"m.150_152dup"`, `"c.10dup"`
+
+`m.` positions are converted to gene-relative positions using the gene start in the genome
+(`gene_position = m_position - gene_start_in_genome + 1`), so `m.` and `c.` notations that point
+to the same nucleotide are fully equivalent. Positions resolving outside the selected gene are
+rejected. Generated reports always list mutations in genome-absolute `m.` notation and show both
+the gene (`c.`) and genome (`m.`) position in separate columns.
 
 ## 🛠️ Development
 
@@ -261,6 +344,8 @@ snp-analyser/
 ├── backend/
 │   ├── analyser_cli/          # Core analysis library
 │   │   ├── analyser.py        # Main Analyser class
+│   │   ├── cds_annotation.py  # GenBank CDS qualifiers and NCBI genetic codes
+│   │   ├── protein_alignment.py # Original vs mutated translation alignment
 │   │   ├── reporter.py        # Report generation
 │   │   ├── data_manager.py    # Genome data management
 │   │   ├── fasta_reader.py    # FASTA file parsing
@@ -272,6 +357,7 @@ snp-analyser/
 │   ├── analyser_backend/      # FastAPI web backend
 │   │   ├── main.py           # FastAPI app
 │   │   ├── routers/          # API endpoints
+│   │   ├── templates/        # HTML report template
 │   │   └── models/           # Pydantic models
 │   ├── tests/                # Test suite
 │   └── requirements.txt      # Python dependencies
@@ -330,7 +416,10 @@ To add support for additional organisms:
    }
    ```
 
-2. The DataManager will automatically download and cache the genome on first use.
+2. The DataManager will automatically download and cache the genome on first use. The
+   genetic code, reading frame and codon exceptions are read from the GenBank record
+   itself (`/transl_table`, `/codon_start`, `/transl_except`), so nothing else has to be
+   declared for a new organism.
 
 ### Running Tests
 
@@ -376,18 +465,80 @@ ENTREZ_EMAIL = "your.email@example.com"
 
 ### Genomic Data Storage
 Downloaded GenBank files are cached in `backend/genomic_data/` to avoid repeated downloads.
-### DNA Type Selection
-- **Mitochondrial**: Uses Vertebrate Mitochondrial codon table (includes UGA as Trp, AGA/AGG as stop)
-- **Nuclear**: Uses Standard codon table
 
-Select the appropriate type based on your sequence source:
-```python
-# For mitochondrial DNA
-analyser = Analyser(sequence, dna_type="mitochondrial")
+### HelixFold-single predictor
 
-# For nuclear DNA
-analyser = Analyser(sequence, dna_type="nuclear")
+The backend loads `backend/.env` automatically on startup.
+
+Use `./scripts/setup_helixfold_single.sh` to clone HelixFold-single into `backend/external/HelixFold-single` and download `helixfold-single.pdparams`.
+Create a clean Python 3.11 venv inside the HelixFold repo, strip version pins from its `requirements.txt`, add `paddlepaddle`, and install the requirements there.
+
+Quick check:
+```bash
+cd backend/external/HelixFold-single
+. .venv_backup/bin/activate
+python - <<'PY'
+import ml_collections, tensorflow, jax, haiku, tree, paddle
+print("HelixFold environment OK")
+PY
 ```
+
+Required variables in `backend/.env`:
+
+- `HELIXFOLD_SINGLE_ENABLED=true`
+- `HELIXFOLD_SINGLE_REPO_DIR=/absolute/path/to/backend/external/HelixFold-single`
+- `HELIXFOLD_SINGLE_MODEL_PATH=/absolute/path/to/backend/models/helixfold-single.pdparams`
+
+Optional variables:
+
+- `HELIXFOLD_SINGLE_PYTHON_BIN=/absolute/path/to/backend/external/HelixFold-single/.venv/bin/python`
+- `HELIXFOLD_SINGLE_SCRIPT_RELPATH=helixfold_single_inference.py`
+- `HELIXFOLD_SINGLE_TIMEOUT_SECONDS=7200`
+
+If `HELIXFOLD_SINGLE_PYTHON_BIN` is unset, the backend uses the HelixFold repo's `.venv/bin/python` only; it does not fall back to the server interpreter.
+
+When enabled, the report flow runs HelixFold, stores the predicted structure in the report cache, and renders it in the HTML report.
+
+### Genetic Code Selection
+
+The genetic code is never guessed from the organism. It is read per gene from the GenBank
+record of the genome, so every one of the NCBI genetic codes (`transl_table` 1-33) is
+supported automatically:
+
+| Qualifier | Meaning | Fallback |
+| --- | --- | --- |
+| `/transl_table` | NCBI genetic code id, e.g. 2 (Vertebrate Mitochondrial) or 5 (Invertebrate Mitochondrial) | 1 (Standard), which is what GenBank means when the qualifier is absent |
+| `/codon_start` | 1-based offset of the first complete codon inside the feature | 1 |
+| `/transl_except` | Codons whose amino acid differs from the genetic code, used for 3' partial stop codons completed by polyadenylation | none |
+
+`DataManager.get_gene_for_organism` returns them next to the sequence:
+
+```python
+manager = DataManager()
+gene = manager.get_gene_for_organism("drosophila_melanogaster", "ND1")
+
+analyser = Analyser(
+    gene["sequence"],
+    transl_table=gene["translTable"],     # 5 for Drosophila
+    codon_start=gene["codonStart"],
+    transl_except=gene["translExcept"],
+)
+print(analyser.genetic_code_description)  # Invertebrate Mitochondrial (NCBI transl_table=5)
+```
+
+The translation reproduces the GenBank `/translation` qualifier exactly: an alternative
+start codon (`ATT`, `GTG`, `TTG`, ...) is reported as methionine and annotated codon
+exceptions are applied. `backend/tests/analyser_cli/test_genbank_translation.py` asserts
+this for every coding sequence of every cached genome.
+
+Without an explicit id the standard code (NCBI table 1) is used:
+
+```python
+analyser = Analyser(sequence)                     # Standard code
+analyser = Analyser(sequence, transl_table=2)     # Vertebrate Mitochondrial
+```
+
+`dna_type` is only a label shown in the report, it does not influence the translation.
 
 ## ⚠️ Important Notes
 
@@ -427,7 +578,12 @@ reporter = Reporter()
 gene_data = manager.get_gene_for_organism("homo_sapiens", "CYTB")
 
 # Analyze a known mutation
-analyser = Analyser(gene_data["sequence"], dna_type="mitochondrial")
+analyser = Analyser(
+    gene_data["sequence"],
+    transl_table=gene_data["translTable"],
+    codon_start=gene_data["codonStart"],
+    transl_except=gene_data["translExcept"],
+)
 mutations = [
     {"type": "sub", "position": 100, "alt": "T"},
     {"type": "sub", "position": 250, "alt": "G"}

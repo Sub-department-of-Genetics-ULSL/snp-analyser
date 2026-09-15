@@ -7,12 +7,7 @@ export default defineConfig({
     port: 5173,
     host: true,
     proxy: {
-      '/api': {
-        target: 'http://localhost:8000',
-        rewrite: (path) => path.replace(/^\/api/, '')
-      },
-      '/generated-reports': 'http://localhost:8000',
-      '/pdb-files': 'http://localhost:8000'
+      '/api': 'http://localhost:8000'
     }
   }
 });

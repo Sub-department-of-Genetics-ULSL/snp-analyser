@@ -27,6 +27,7 @@ from backend.analyser_backend.services.helixfold import (
 router = APIRouter()
 manager = DataManager()
 reporter = Reporter()
+API_PREFIX = "/api"
 REPORTS_DIR = Path(__file__).resolve().parent.parent / "generated_reports"
 PDB_FILES_DIR = Path(__file__).resolve().parent.parent / "pdb_files"
 TEMPLATES_DIR = Path(__file__).resolve().parent.parent / "templates"
@@ -427,7 +428,7 @@ def _first_disturbed_base(mutation: dict) -> int:
 
 def _build_static_url(path: Path) -> str:
     relative_path = path.relative_to(PDB_FILES_DIR).as_posix()
-    return f"/pdb-files/{relative_path}"
+    return f"{API_PREFIX}/pdb-files/{relative_path}"
 
 
 def _build_original_pdb_path(organism: str, gene: str) -> Path:
@@ -801,7 +802,7 @@ def _load_report_job_from_db(job_id: str, report_base_url: str) -> dict | None:
     if data.get("report_base_url") != report_base_url:
         data["report_base_url"] = report_base_url
         if data.get("status") == "completed":
-            data["report_url"] = f"{report_base_url}/generated-reports/{job_id}.html"
+            data["report_url"] = f"{report_base_url}{API_PREFIX}/generated-reports/{job_id}.html"
     return data
 
 
@@ -819,7 +820,7 @@ def _load_report_jobs_from_db(report_base_url: str) -> dict[str, dict]:
         data = json.loads(row["payload_json"])
         data["report_base_url"] = report_base_url
         if data.get("status") == "completed":
-            data["report_url"] = f"{report_base_url}/generated-reports/{row['job_id']}.html"
+            data["report_url"] = f"{report_base_url}{API_PREFIX}/generated-reports/{row['job_id']}.html"
         jobs[row["job_id"]] = data
     return jobs
 
@@ -846,7 +847,7 @@ def _parse_report_html(job_id: str, html_text: str, report_base_url: str) -> dic
         "predict_mutated_structure": predicted,
         "created_at": timestamp,
         "updated_at": timestamp,
-        "report_url": f"{report_base_url}/generated-reports/{job_id}.html",
+        "report_url": f"{report_base_url}{API_PREFIX}/generated-reports/{job_id}.html",
         "report_base_url": report_base_url,
         "error": None,
     }
@@ -859,7 +860,7 @@ def _seed_report_job_from_file(job_id: str, report_base_url: str) -> dict | None
         data = json.loads(metadata_path.read_text(encoding="utf-8"))
         data["report_base_url"] = report_base_url
         if _report_html_path(job_id).exists():
-            data["report_url"] = f"{report_base_url}/generated-reports/{job_id}.html"
+            data["report_url"] = f"{report_base_url}{API_PREFIX}/generated-reports/{job_id}.html"
         return data
 
     html_path = _report_html_path(job_id)
@@ -884,7 +885,7 @@ def _job_from_metadata(job_id: str, metadata_path: Path, report_base_url: str) -
     data = json.loads(metadata_path.read_text(encoding="utf-8"))
     html_path = _report_html_path(job_id)
     if html_path.exists():
-        data["report_url"] = f"{report_base_url}/generated-reports/{job_id}.html"
+        data["report_url"] = f"{report_base_url}{API_PREFIX}/generated-reports/{job_id}.html"
     _persist_report_job_to_db(data, data.get("report_file"))
     return data
 
@@ -1048,7 +1049,7 @@ def _process_report_job(job_id: str):
             if completed_job is not None:
                 completed_job["status"] = "completed"
                 report_base_url = completed_job.get("report_base_url", "").rstrip("/")
-                completed_job["report_url"] = f"{report_base_url}/generated-reports/{job_id}.html"
+                completed_job["report_url"] = f"{report_base_url}{API_PREFIX}/generated-reports/{job_id}.html"
                 completed_job["updated_at"] = datetime.now(timezone.utc).isoformat()
                 _persist_completed_job(job_id, completed_job, report_file_path)
     except Exception as exc:

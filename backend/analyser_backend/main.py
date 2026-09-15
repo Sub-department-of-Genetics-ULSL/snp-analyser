@@ -9,8 +9,8 @@ from routers.report import get_helixfold_startup_status
 
 
 app = FastAPI()
-app.include_router(organisms_router)
-app.include_router(report_router)
+app.include_router(organisms_router, prefix="/api")
+app.include_router(report_router, prefix="/api")
 logger = logging.getLogger(__name__)
 
 origins = [
@@ -36,12 +36,12 @@ generated_reports_dir.mkdir(parents=True, exist_ok=True)
 pdb_files_dir.mkdir(parents=True, exist_ok=True)
 
 app.mount(
-    "/generated-reports",
+    "/api/generated-reports",
     StaticFiles(directory=str(generated_reports_dir)),
     name="generated-reports",
 )
 app.mount(
-    "/pdb-files",
+    "/api/pdb-files",
     StaticFiles(directory=str(pdb_files_dir)),
     name="pdb-files",
 )

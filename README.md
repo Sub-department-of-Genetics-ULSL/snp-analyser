@@ -255,6 +255,36 @@ MUTATED     1 MPMAN LLLLI VPI-I AMAFL MLTER KILGY MQLCK GPNVV GPYGL LQPFA  49
   residues, and the raw sequences stay available in a collapsed `Raw protein sequences`
   block for copy-pasting.
 
+Pairwise alignment only holds while both translations stay homologous, which is the case
+for an in-frame indel. Two mutations break that assumption and are therefore anchored on
+the residues they share instead of being aligned:
+
+- a **frameshift** reads the rest of the gene in another frame, so the tail is a different
+  peptide rather than a shifted one,
+- a **premature stop codon** simply cuts the protein short, so the rest of the original is
+  lost rather than changed.
+
+In both cases the aligner would chase the ~6% of residue pairs that match by chance and
+scatter gaps through the tail, which reads as a series of small edits instead of the single
+catastrophic one that actually happened. The residues **before** the frameshift are still
+homologous, so they keep being aligned normally and a substitution there stays a
+substitution. Only the tail is anchored, padded at the end, marked with `^` and explained
+above the alignment:
+
+```
+ORIGINAL  121 LLVMM TAFVG YVLPW GQMSF WGATV ITNLL SAVPY VGDTL VQWIW GGFSV 170
+MUTATED   121 LLVMM TAFVG MRPSM GPNII L*GHS NY*PI IGRSL RG*YP SAMNL *GILS 170
+                          ||||| ||||| ||||| ||||| ||||| ||||| ||||| |||||
+                          ^
+```
+
+The split point is taken from the mutation itself - the first codon read in another frame -
+not from the first residue that happens to differ, so an earlier substitution or in-frame
+indel does not drag the anchor forward.
+
+Gaps are also pushed to the rightmost position that describes the same indel, so a residue
+deleted from a repeat is numbered the way HGVS names it in the mutation table.
+
 ## 🌐 Web Interface Features
 
 - **Organism Selection**: Choose from pre-configured organisms (human, pig, dog, cow)

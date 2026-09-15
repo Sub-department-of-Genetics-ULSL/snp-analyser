@@ -172,13 +172,15 @@ def _annotate_deletion(mutation: dict, deleted_length: int):
 
 def _build_ins_mutation(pos: int, sequence: str, prefix: str, start_genome_pos: int):
     rel_pos = _to_relative_position(pos, prefix, start_genome_pos)
+    inserted_length = len(sequence)
     return {
         "type": "ins",
         "position": rel_pos,
         "ref": None,
         "alt": sequence,
-        "inserted_length": len(sequence),
-        "length_change": len(sequence)
+        "inserted_length": inserted_length,
+        "length_change": inserted_length,
+        "frameshift": (inserted_length % 3) != 0
     }
 
 
@@ -394,6 +396,35 @@ def _build_report_consequence(mutation: dict):
     return mut_type.upper()
 
 
+def _frameshift_residue(report_mutations: list[dict], coding_offset: int) -> int | None:
+    """Return the first residue of the original protein that is read in another frame."""
+    disturbed = [
+        _first_disturbed_base(mutation)
+        for mutation in report_mutations
+        if mutation.get("frameshift") is True
+    ]
+    if not disturbed:
+        return None
+
+    # Everything before the earliest frameshift is still translated the way it always was.
+    return (min(disturbed) - 1 - coding_offset) // 3 + 1
+
+
+def _first_disturbed_base(mutation: dict) -> int:
+    """Return the gene-relative position of the first base a frameshifting indel moves."""
+    position = _get_required_position(mutation)
+    mut_type = mutation.get("type", "sub")
+
+    # An insertion and a duplication are placed after their anchor, so the anchor itself
+    # still belongs to the untouched part of the gene, while a deletion starts on it.
+    if mut_type == "ins":
+        return position + 1
+    if mut_type == "dup":
+        return int(mutation.get("end_position", position)) + 1
+
+    return position
+
+
 def _build_static_url(path: Path) -> str:
     relative_path = path.relative_to(PDB_FILES_DIR).as_posix()
     return f"/pdb-files/{relative_path}"
@@ -455,7 +486,7 @@ def _build_translation_alignment_html(alignment) -> str:
     if not alignment.has_mutated:
         return '<p class="muted">No mutations were applied, so there is nothing to compare.</p>'
 
-    blocks = []
+    blocks = [_build_divergence_notice(alignment)]
     for line in alignment.lines(ALIGNMENT_LINE_LENGTH, ALIGNMENT_GROUP_SIZE):
         marker = group_residues(
             "".join("|" if different else " " for different in line.differences),
@@ -473,10 +504,50 @@ def _build_translation_alignment_html(alignment) -> str:
             '<span class="aln-label"></span><span class="aln-pos"></span>'
             f'<span class="aln-seq">{marker}</span>'
             '<span class="aln-pos aln-pos-end"></span>'
-            "</div></div>"
+            "</div>"
+            + _build_divergence_marker(line)
+            + "</div>"
         )
 
     return f'<div class="alignment">{"".join(blocks)}</div>'
+
+
+def _build_divergence_marker(line) -> str:
+    """Point at the residue where the mutated translation stops being homologous."""
+    if line.divergence is None:
+        return ""
+
+    arrow = "".join("^" if index == line.divergence else " " for index in range(len(line.original)))
+
+    return (
+        '<div class="aln-line aln-divergence">'
+        '<span class="aln-label"></span><span class="aln-pos"></span>'
+        f'<span class="aln-seq">{group_residues(arrow, ALIGNMENT_GROUP_SIZE)}</span>'
+        '<span class="aln-pos aln-pos-end"></span>'
+        "</div>"
+    )
+
+
+def _build_divergence_notice(alignment) -> str:
+    """Warn that the residues past a frameshift or a premature stop cannot be compared."""
+    if alignment.is_homologous:
+        return ""
+
+    if alignment.divergence_reason == "truncation":
+        explanation = (
+            f"A premature stop codon ends the mutated protein at residue "
+            f"{alignment.mutated_length}, so the remaining "
+            f"{alignment.original_length - alignment.mutated_length} residues of the "
+            f"original are lost rather than changed."
+        )
+    else:
+        explanation = (
+            f"A frameshift starts at residue {alignment.divergence_start}. Everything "
+            f"after it is read in another frame, so the two tails are different peptides "
+            f"and are shown side by side instead of aligned residue by residue."
+        )
+
+    return f'<p class="aln-notice">{html.escape(explanation)}</p>'
 
 
 def _build_report_html(
@@ -493,6 +564,7 @@ def _build_report_html(
     original_pdb_path: Path | None,
     mutated_pdb_path: Path | None,
     mutated_prediction: HelixFoldPrediction | None,
+    coding_offset: int = 0,
 ):
     total_mutations = len(report_mutations)
     frameshift_mutations = sum(1 for mutation in report_mutations if mutation.get("frameshift") is True)
@@ -505,7 +577,11 @@ def _build_report_html(
     original_pdb_url = _build_static_url(original_pdb_path) if original_pdb_path else None
     mutated_pdb_url = _build_static_url(mutated_pdb_path) if mutated_pdb_path else None
     prediction_available = mutated_pdb_url is not None
-    alignment = align_translations(amino_acid_translation, mutated_amino_acid_translation)
+    alignment = align_translations(
+        amino_acid_translation,
+        mutated_amino_acid_translation,
+        frameshift_residue=_frameshift_residue(report_mutations, coding_offset),
+    )
 
     mutation_rows = []
     for mutation in report_mutations:
@@ -962,6 +1038,7 @@ def _process_report_job(job_id: str):
             original_pdb_path=original_pdb_path if original_pdb_path.exists() else None,
             mutated_pdb_path=mutated_pdb_path if mutated_pdb_path and mutated_pdb_path.exists() else None,
             mutated_prediction=mutated_prediction,
+            coding_offset=analyser.coding_offset,
         )
         report_file_path = REPORTS_DIR / f"{job_id}.html"
         report_file_path.write_text(html_report, encoding="utf-8")

@@ -42,6 +42,8 @@
     .aln-diff { background:#fde68a; border-radius:3px; box-shadow: inset 0 -2px 0 #f59e0b; }
     .aln-gap { background:#e5e7eb; border-radius:3px; color:var(--muted); }
     .aln-marker { color:#b45309; }
+    .aln-divergence { color:#b91c1c; font-weight:700; }
+    .aln-notice { margin:0 0 14px; padding:8px 12px; border-left:3px solid #b91c1c; background:#fef2f2; color:#7f1d1d; font-size:0.8rem; line-height:1.45; }
     .legend { display:flex; flex-wrap:wrap; gap:14px; margin:0 0 12px; padding:0; list-style:none; color:var(--muted); font-size:0.8rem; }
     .legend span { padding:1px 5px; border-radius:3px; }
     @media (max-width: 900px) {
@@ -109,6 +111,7 @@
         <ul class="legend">
           <li><span class="aln-diff">A</span> changed residue</li>
           <li><span class="aln-gap">-</span> gap (residue inserted or deleted)</li>
+          <li><span class="aln-divergence">^</span> start of a non-homologous tail</li>
           <li>positions are numbered every line, residues are grouped by five</li>
         </ul>
         __TRANSLATION_ALIGNMENT__

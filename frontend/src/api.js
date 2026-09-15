@@ -1,4 +1,4 @@
-const rawBaseUrl = import.meta.env.VITE_API_BASE_URL || '';
+const rawBaseUrl = import.meta.env.VITE_API_BASE_URL || '/api';
 const baseUrl = rawBaseUrl.replace(/\/$/, '');
 
 function toApiUrl(path) {

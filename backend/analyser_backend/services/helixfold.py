@@ -7,6 +7,7 @@ import shutil
 import subprocess
 from dataclasses import dataclass
 from errno import ENOEXEC
+from math import fsum, sqrt
 from pathlib import Path
 from threading import Lock
 from typing import Any
@@ -15,6 +16,13 @@ from backend.analyser_backend.runtime_env import load_backend_env
 
 
 load_backend_env()
+
+
+# Bumped whenever the prediction pipeline changes in a way that invalidates
+# previously cached structures.
+PIPELINE_VERSION = 2
+
+RELAX_SCRIPT_PATH = Path(__file__).resolve().parent / "helixfold_relax.py"
 
 
 @dataclass(slots=True, frozen=True)
@@ -70,9 +78,55 @@ def build_prediction_cache_key(
         "mutations": normalize_mutations(mutations),
         "model_path": str(model_path),
         "script_path": str(script_path),
+        "pipeline_version": PIPELINE_VERSION,
     }
     digest = hashlib.sha256(json.dumps(payload, sort_keys=True, separators=(",", ":")).encode("utf-8")).hexdigest()
     return digest
+
+
+def backbone_geometry(pdb_text: str) -> dict[str, Any]:
+    """Measures backbone bond lengths used to detect malformed predictions.
+
+    A physical protein chain has peptide bonds (C-N) near 1.33 A and
+    consecutive CA atoms near 3.80 A. Raw HelixFold output violates both.
+    """
+    chain: list[dict[str, tuple[float, float, float]]] = []
+    current_residue: int | None = None
+
+    for line in pdb_text.splitlines():
+        if not line.startswith("ATOM") or len(line) < 54:
+            continue
+        atom = line[12:16].strip()
+        if atom not in {"N", "CA", "C"}:
+            continue
+        residue = int(line[22:26])
+        if residue != current_residue:
+            chain.append({})
+            current_residue = residue
+        chain[-1][atom] = (float(line[30:38]), float(line[38:46]), float(line[46:54]))
+
+    def _distance(a: tuple[float, float, float], b: tuple[float, float, float]) -> float:
+        return sqrt(sum((a[i] - b[i]) ** 2 for i in range(3)))
+
+    peptide_bonds: list[float] = []
+    ca_distances: list[float] = []
+    for first, second in zip(chain, chain[1:]):
+        if "C" in first and "N" in second:
+            peptide_bonds.append(_distance(first["C"], second["N"]))
+        if "CA" in first and "CA" in second:
+            ca_distances.append(_distance(first["CA"], second["CA"]))
+
+    if not peptide_bonds or not ca_distances:
+        return {"residues": len(chain), "measured": False}
+
+    return {
+        "residues": len(chain),
+        "measured": True,
+        "peptide_bond_mean": round(fsum(peptide_bonds) / len(peptide_bonds), 3),
+        "peptide_bond_min": round(min(peptide_bonds), 3),
+        "ca_distance_mean": round(fsum(ca_distances) / len(ca_distances), 3),
+        "ca_distance_min": round(min(ca_distances), 3),
+    }
 
 
 def protein_sequence_for_prediction(amino_acid_translation: str) -> str:
@@ -116,6 +170,8 @@ class HelixFoldService:
         self._python_bin = self._resolve_python_bin()
         self._script_relpath = os.getenv("HELIXFOLD_SINGLE_SCRIPT_RELPATH", "helixfold_single_inference.py")
         self._timeout_seconds = int(os.getenv("HELIXFOLD_SINGLE_TIMEOUT_SECONDS", "7200"))
+        self._relax_enabled = os.getenv("HELIXFOLD_RELAX_ENABLED", "true").strip().lower() in {"1", "true", "yes", "on"}
+        self._relax_timeout_seconds = int(os.getenv("HELIXFOLD_RELAX_TIMEOUT_SECONDS", "1800"))
 
     @property
     def available(self) -> bool:
@@ -237,6 +293,10 @@ class HelixFoldService:
                 output_candidate = pdb_candidates[0]
 
             shutil.copy2(output_candidate, mutated_pdb_path)
+            relax_info = self._relax_structure(output_candidate, run_dir / "relaxed.pdb")
+            if relax_info.get("relaxed"):
+                shutil.copy2(run_dir / "relaxed.pdb", mutated_pdb_path)
+
             metadata = {
                 "engine": "helixfold_single",
                 "repo_dir": str(self._repo_dir),
@@ -244,11 +304,14 @@ class HelixFoldService:
                 "model_path": str(self._model_path),
                 "python_bin": self._python_bin,
                 "timeout_seconds": self._timeout_seconds,
-                "selected_output": output_candidate.name,
+                "selected_output": "relaxed.pdb" if relax_info.get("relaxed") else output_candidate.name,
                 "organism": organism,
                 "gene": gene,
                 "cache_key": cache_key,
                 "protein_sequence_length": len(protein_sequence),
+                "pipeline_version": PIPELINE_VERSION,
+                "relax": relax_info,
+                "backbone_geometry": backbone_geometry(mutated_pdb_path.read_text(encoding="utf-8")),
             }
             metadata_path.write_text(json.dumps(metadata, indent=2, sort_keys=True), encoding="utf-8")
 
@@ -259,6 +322,54 @@ class HelixFoldService:
                 protein_sequence=protein_sequence,
                 metadata=metadata,
             )
+
+    def _relax_structure(self, source_pdb: Path, target_pdb: Path) -> dict[str, Any]:
+        """Runs Amber minimisation on a raw prediction.
+
+        HelixFold-single only emits an unrelaxed structure, whose peptide bonds
+        violate physical geometry and therefore render incorrectly. Failures are
+        non-fatal: the caller keeps the unrelaxed structure instead.
+        """
+        if not self._relax_enabled:
+            return {"relaxed": False, "skipped": "HELIXFOLD_RELAX_ENABLED is disabled."}
+
+        assert self._repo_dir is not None
+        assert self._python_bin is not None
+
+        env = os.environ.copy()
+        existing_path = env.get("PYTHONPATH", "")
+        env["PYTHONPATH"] = f"{self._repo_dir}{os.pathsep}{existing_path}" if existing_path else str(self._repo_dir)
+
+        try:
+            completed = subprocess.run(
+                [
+                    self._python_bin,
+                    str(RELAX_SCRIPT_PATH),
+                    f"--input={source_pdb}",
+                    f"--output={target_pdb}",
+                ],
+                cwd=self._repo_dir,
+                env=env,
+                capture_output=True,
+                text=True,
+                check=False,
+                timeout=max(self._relax_timeout_seconds, 60),
+            )
+        except (OSError, subprocess.TimeoutExpired) as exc:
+            return {"relaxed": False, "error": f"Failed to execute the relaxation step: {exc}"}
+
+        if completed.returncode != 0 or not target_pdb.exists():
+            details = completed.stderr.strip() or completed.stdout.strip() or "Unknown relaxation error."
+            return {"relaxed": False, "error": details[-2000:]}
+
+        info: dict[str, Any] = {"relaxed": True}
+        for line in reversed(completed.stdout.strip().splitlines()):
+            try:
+                info.update(json.loads(line))
+            except json.JSONDecodeError:
+                continue
+            break
+        return info
 
     def _resolve_repo_dir(self) -> Path | None:
         configured = os.getenv("HELIXFOLD_SINGLE_REPO_DIR", "").strip()
@@ -348,6 +459,8 @@ class HelixFoldService:
         self._python_bin = self._resolve_python_bin()
         self._script_relpath = os.getenv("HELIXFOLD_SINGLE_SCRIPT_RELPATH", "helixfold_single_inference.py")
         self._timeout_seconds = int(os.getenv("HELIXFOLD_SINGLE_TIMEOUT_SECONDS", "7200"))
+        self._relax_enabled = os.getenv("HELIXFOLD_RELAX_ENABLED", "true").strip().lower() in {"1", "true", "yes", "on"}
+        self._relax_timeout_seconds = int(os.getenv("HELIXFOLD_RELAX_TIMEOUT_SECONDS", "1800"))
 
     def _build_unavailable_reason(self) -> str:
         enabled_raw = os.getenv("HELIXFOLD_SINGLE_ENABLED", "").strip()

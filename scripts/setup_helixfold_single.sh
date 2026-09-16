@@ -102,15 +102,15 @@ cat <<EOF
 
 Done.
 
-Create a clean Python 3.11 venv manually, then install HelixFold requirements there.
-Before installing, remove version pins from HelixFold's requirements.txt and add paddlepaddle.
+Create a clean Python venv manually, then install HelixFold requirements there.
+The pinned requirements.txt already includes paddlepaddle and the OpenMM/pdbfixer
+packages needed for the Amber relaxation step.
 
 Suggested next steps:
   cd "$REPO_DIR"
-  python3.11 -m venv .venv
+  python3.12 -m venv .venv
   source .venv/bin/activate
   python -m pip install --upgrade pip
-  # edit requirements.txt: drop version pins, add paddlepaddle
   python -m pip install -r requirements.txt
 
 Add these values to backend/.env:
@@ -121,4 +121,6 @@ HELIXFOLD_SINGLE_MODEL_PATH=$MODEL_PATH
 HELIXFOLD_SINGLE_PYTHON_BIN=$REPO_DIR/.venv/bin/python
 HELIXFOLD_SINGLE_SCRIPT_RELPATH=helixfold_single_inference.py
 HELIXFOLD_SINGLE_TIMEOUT_SECONDS=7200
+HELIXFOLD_RELAX_ENABLED=true
+HELIXFOLD_RELAX_TIMEOUT_SECONDS=1800
 EOF

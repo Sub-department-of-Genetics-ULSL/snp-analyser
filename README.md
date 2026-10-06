@@ -172,11 +172,15 @@ The web interface provides:
 
 ### Physicochemical Properties Analysis (Optional)
 When R and the Peptides package are installed, the reporter includes:
-- **Isoelectric Point (pI)**: Change in peptide isoelectric point
+- **Isoelectric Point (pI)**: Change in peptide isoelectric point (Bjellqvist pK scale, as used by ExPASy ProtParam)
 - **Molecular Weight**: Change in peptide molecular weight
 - **Charge**: Change in peptide net charge
 - **Hydrophobicity**: Change in hydrophobicity (Kyte-Doolittle scale)
 - **Instability Index**: Change in peptide stability prediction
+
+All five properties are computed on the amino acid translation, truncated at the first stop
+codon, so they describe the peptide the ribosome actually releases. Feeding the DNA to
+Peptides would be silently misread as a peptide of Ala/Thr/Gly/Cys residues.
 
 ## 📝 Report Format
 

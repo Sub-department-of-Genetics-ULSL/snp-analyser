@@ -327,8 +327,7 @@ class HelixFoldService:
         """Runs Amber minimisation on a raw prediction.
 
         HelixFold-single only emits an unrelaxed structure, whose peptide bonds
-        violate physical geometry and therefore render incorrectly. Failures are
-        non-fatal: the caller keeps the unrelaxed structure instead.
+        violate physical geometry and therefore render incorrectly.
         """
         if not self._relax_enabled:
             return {"relaxed": False, "skipped": "HELIXFOLD_RELAX_ENABLED is disabled."}

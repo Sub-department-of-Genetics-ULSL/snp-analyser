@@ -1,3 +1,3 @@
-from .report_data import ReportData
+from .report_data import DescribeRequest, ReportData
 
-__all__ = ["ReportData"]
+__all__ = ["DescribeRequest", "ReportData"]

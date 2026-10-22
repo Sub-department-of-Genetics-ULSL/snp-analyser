@@ -1,20 +1,31 @@
 from typing import Dict, List
+
 from ..analyser import Analyser
+from ..hgvs_protein import CdsEdit, ProteinConsequence, predict_consequence, three_letter
 from ..report_base import SubReport, ReportFormatter
+
+# CLI mutations use short type names, the web report the HGVS variant types.
+TYPE_LABELS = {
+    "sub": "substitution",
+    "del": "deletion",
+    "ins": "insertion",
+    "delins": "deletion-insertion",
+    "dup": "duplication",
+}
 
 
 class MutationEffectsReport(SubReport):
-    """Sub-report for DNA mutations and their amino acid effects."""
-    
+    """Sub-report for DNA variants and their predicted protein consequences."""
+
     @property
     def name(self) -> str:
         return "Mutation Effects"
-    
+
     def generate_content(self, analyser: Analyser, mutations: List[Dict]) -> str:
-        """Generate content showing DNA mutations and amino acid changes."""
+        """Generate content showing DNA variants and amino acid changes."""
         if not mutations or analyser.mutated_sequence is None:
             return "No mutations applied."
-        
+
         report_lines = [
             ReportFormatter.format_key_value("DNA Sequence Type", analyser.dna_type.title()),
             ReportFormatter.format_key_value("Genetic Code", analyser.genetic_code_description),
@@ -25,199 +36,190 @@ class MutationEffectsReport(SubReport):
             "MUTATION DETAILS:",
             ReportFormatter.format_detail_separator()
         ]
-        
-        codon_effects = self._analyze_codon_effects(analyser, mutations)
-        
-        for i, mutation in enumerate(mutations, 1):
-            pos = mutation["position"]
-            end_pos = mutation.get("end_position", pos)
-            mut_type = mutation.get("type", "sub")
-            position_display = str(pos) if pos == end_pos else f"{pos}_{end_pos}"
 
-            if mut_type == "sub":
-                original_base = mutation.get("ref") or str(analyser.input_sequence[pos - 1])
-                new_base = mutation.get("alt", "?")
-                change_str = f"{original_base} -> {new_base}"
-            elif mut_type == "del":
-                if pos == end_pos:
-                    original_base = mutation.get("ref") or str(analyser.input_sequence[pos - 1])
-                    change_str = f"Deletion of {original_base}"
-                else:
-                    deleted_count = end_pos - pos + 1
-                    change_str = f"Deletion of {deleted_count} nucleotides"
-            elif mut_type == "ins":
-                inserted_seq = mutation.get("alt", "?")
-                change_str = f"Insertion of {inserted_seq}"
-            elif mut_type == "delins":
-                inserted_seq = mutation.get("alt", "?")
-                deleted_count = end_pos - pos + 1
-                change_str = f"Replacement of {deleted_count} nucleotide(s) with {inserted_seq}"
-            elif mut_type == "dup":
-                duplicated_seq = mutation.get("alt", "?")
-                change_str = f"Duplication of {duplicated_seq}"
-            else:
-                change_str = "Unknown mutation type"
+        for number, mutation in enumerate(mutations, 1):
+            report_lines.extend(self._describe_mutation(number, analyser, mutation))
 
-            consequence = self._describe_indel_consequence(mutation)
-
-            report_lines.extend([
-                "",
-                f"Mutation #{i} ({mut_type.upper()}):",
-                ReportFormatter.format_key_value("Position", position_display, indent=2),
-                ReportFormatter.format_key_value("Change", change_str, indent=2),
-            ])
-
-            if mut_type == "sub":
-                report_lines.append(
-                    ReportFormatter.format_key_value(
-                        "Codon Position",
-                        self._get_codon_position(pos, analyser.coding_offset),
-                        indent=2,
-                    )
-                )
-            elif consequence:
-                report_lines.append(
-                    ReportFormatter.format_key_value("Effect Type", consequence, indent=2)
-                )
-                report_lines.append(
-                    ReportFormatter.format_key_value(
-                        "Length Change", self._format_length_change(mutation), indent=2
-                    )
-                )
-
-            if pos in codon_effects:
-                effect = codon_effects[pos]
-                report_lines.extend([
-                    ReportFormatter.format_key_value(
-                        "Codon",
-                        f"{effect['original_codon']} -> {effect['mutated_codon']}",
-                        indent=2,
-                    ),
-                    ReportFormatter.format_key_value(
-                        "Amino Acid",
-                        f"{effect['original_aa']} -> {effect['mutated_aa']}",
-                        indent=2,
-                    ),
-                    ReportFormatter.format_key_value("Effect Type", effect['effect_type'], indent=2),
-                ])
-
-        mutated_length = len(analyser.mutated_amino_acid_translation) if analyser.mutated_amino_acid_translation else 0
+        original = str(analyser.amino_acid_translation)
+        mutated = str(analyser.mutated_amino_acid_translation or "")
+        mutated_length = self._peptide_length(mutated)
         report_lines.extend([
             "",
             "",
             ReportFormatter.format_detail_separator(),
             "AMINO ACID TRANSLATION SUMMARY:",
             ReportFormatter.format_detail_separator(),
-            ReportFormatter.format_key_value("Original", str(analyser.amino_acid_translation)),
-            ReportFormatter.format_key_value("Mutated", str(analyser.mutated_amino_acid_translation), indent=1),
+            ReportFormatter.format_key_value("Original", original),
+            ReportFormatter.format_key_value("Mutated", mutated, indent=1),
             "",
-            ReportFormatter.format_key_value("Translation Length", f"{len(analyser.amino_acid_translation)} -> {mutated_length} amino acids")
+            # Translation ends at the first stop codon, so a premature one shortens the
+            # peptide even though the whole translation is shown above.
+            ReportFormatter.format_key_value(
+                "Peptide Length",
+                f"{self._peptide_length(original)} -> {mutated_length} "
+                f"amino acid{'' if mutated_length == 1 else 's'} (up to the first stop codon)",
+            ),
         ])
-        
+
         return "\n".join(report_lines)
-    
-    def _get_codon_position(self, nucleotide_pos: int, coding_offset: int = 0) -> str:
-        """Determine codon number and position within codon."""
-        offset_pos = nucleotide_pos - coding_offset
-        if offset_pos < 1:
-            return "5' UTR (before the first codon)"
-        codon_num = (offset_pos - 1) // 3 + 1
-        pos_in_codon = (offset_pos - 1) % 3 + 1
-        return f"Codon {codon_num}, Position {pos_in_codon}"
-    
-    def _analyze_codon_effects(self, analyser: Analyser, mutations: List[Dict]) -> Dict:
-        """Analyze the effect of mutations on codons and amino acids."""
-        effects = {}
-        
-        original_seq = str(analyser.input_sequence)
-        mutated_seq = str(analyser.mutated_sequence)
-        coding_offset = analyser.coding_offset
-        
-        for mutation in mutations:
-            if mutation.get("type", "sub") != "sub":
-                continue
 
-            pos = mutation["position"]
-            if pos <= coding_offset:
-                continue
+    @staticmethod
+    def _peptide_length(translation: str) -> int:
+        return len(translation.split("*", 1)[0])
 
-            codon_start = ((pos - coding_offset - 1) // 3) * 3 + coding_offset
-            codon_end = codon_start + 3
-            
-            if codon_end <= len(original_seq) and codon_end <= len(mutated_seq):
-                original_codon = original_seq[codon_start:codon_end]
-                mutated_codon = mutated_seq[codon_start:codon_end]
-                
-                original_aa = self._translate_codon(original_codon, analyser.codon_table)
-                mutated_aa = self._translate_codon(mutated_codon, analyser.codon_table)
-                
-                if original_aa == mutated_aa:
-                    effect_type = "Silent (synonymous)"
-                elif mutated_aa == "*":
-                    effect_type = "Nonsense (stop codon)"
-                elif original_aa == "*":
-                    effect_type = "Readthrough (stop codon lost)"
-                else:
-                    effect_type = "Missense (amino acid change)"
-                
-                effects[pos] = {
-                    "original_codon": original_codon,
-                    "mutated_codon": mutated_codon,
-                    "original_aa": original_aa,
-                    "mutated_aa": mutated_aa,
-                    "effect_type": effect_type
-                }
-        
-        return effects
-    
-    def _translate_codon(self, codon: str, codon_table) -> str:
-        """Translate a single codon to amino acid using the supplied codon table."""
-        from Bio.Seq import Seq
-
-        if len(codon) != 3:
-            return "?"
-
-        try:
-            return str(Seq(codon).translate(table=codon_table))
-        except:
-            return "?"
-
-    def _indel_length_change(self, mutation: Dict) -> int | None:
+    def _describe_mutation(self, number: int, analyser: Analyser, mutation: Dict) -> List[str]:
         mut_type = mutation.get("type", "sub")
+        kind = TYPE_LABELS.get(mut_type, mut_type)
+        lines = ["", f"Mutation #{number} ({kind.upper()}):"]
+
+        for key, label in (("hgvs_m", "HGVS (genome)"), ("hgvs_c", "HGVS (coding DNA)")):
+            if mutation.get(key):
+                lines.append(ReportFormatter.format_key_value(label, mutation[key], indent=2))
+
+        lines.append(ReportFormatter.format_key_value("Position", self._position(mutation), indent=2))
+        lines.append(
+            ReportFormatter.format_key_value("Change", self._change(analyser, mutation, kind), indent=2)
+        )
+
+        if kind == "substitution":
+            lines.extend(self._codon_effect(analyser, mutation["position"]))
+        else:
+            lines.append(
+                ReportFormatter.format_key_value(
+                    "Length Change", self._format_length_change(analyser, mutation), indent=2
+                )
+            )
+
+        protein, consequence = self._protein_change(analyser, mutation)
+        if protein:
+            lines.append(ReportFormatter.format_key_value("HGVS (protein)", protein, indent=2))
+        lines.append(ReportFormatter.format_key_value("Effect Type", consequence, indent=2))
+        return lines
+
+    @staticmethod
+    def _position(mutation: Dict) -> str:
+        position = mutation["position"]
+        end_position = mutation.get("end_position", position)
+        if mutation.get("type") in {"ins", "insertion"} or (
+            mutation.get("hgvs_m") and mutation.get("ref") == ""
+        ):
+            # An insertion sits between the anchor and the next base.
+            return f"{position}_{position + 1}"
+        return str(position) if position == end_position else f"{position}_{end_position}"
+
+    def _change(self, analyser: Analyser, mutation: Dict, kind: str) -> str:
+        position = mutation["position"]
+        end_position = mutation.get("end_position", position)
+        reference = mutation.get("ref")
+        if reference is None and kind in {"substitution", "deletion", "deletion-insertion"}:
+            reference = str(analyser.input_sequence[position - 1:end_position])
+        alt = mutation.get("alt") or ""
+
+        if kind == "substitution":
+            return f"{reference} -> {alt}"
+        if not alt:
+            return f"Deletion of {reference}" if reference else "Deletion"
+        if not reference:
+            word = "Duplication" if kind == "duplication" else "Insertion"
+            return f"{word} of {alt}"
+        return f"{reference} -> {alt}"
+
+    def _codon_effect(self, analyser: Analyser, position: int) -> List[str]:
+        """Codon and amino acid of a substitution, read from the two translations.
+
+        The translations already start with methionine on an alternative start codon and
+        complete a partial 3' stop codon with the poly(A) tail, so they are used instead
+        of translating the bare codon.
+        """
+        offset = analyser.coding_offset
+        if position <= offset:
+            return [ReportFormatter.format_key_value(
+                "Codon Position", "5' of the first complete codon", indent=2
+            )]
+
+        codon_index = (position - offset - 1) // 3
+        codon_start = offset + codon_index * 3
+        lines = [ReportFormatter.format_key_value(
+            "Codon Position",
+            f"Codon {codon_index + 1}, Position {(position - offset - 1) % 3 + 1}",
+            indent=2,
+        )]
+
+        original_codon = self._codon(str(analyser.input_sequence), codon_start)
+        mutated_codon = self._codon(str(analyser.mutated_sequence), codon_start)
+        original = str(analyser.amino_acid_translation)
+        mutated = str(analyser.mutated_amino_acid_translation or "")
+        if codon_index < len(original) and codon_index < len(mutated):
+            lines.extend([
+                ReportFormatter.format_key_value(
+                    "Codon", f"{original_codon} -> {mutated_codon}", indent=2
+                ),
+                ReportFormatter.format_key_value(
+                    "Amino Acid",
+                    f"{three_letter(original[codon_index])} -> {three_letter(mutated[codon_index])}",
+                    indent=2,
+                ),
+            ])
+        return lines
+
+    @staticmethod
+    def _codon(sequence: str, start: int) -> str:
+        """A codon; bases completed by the poly(A) tail of the mRNA are in lower case."""
+        codon = sequence[start:start + 3]
+        return codon + "a" * (3 - len(codon))
+
+    def _protein_change(self, analyser: Analyser, mutation: Dict) -> tuple[str | None, str]:
+        if mutation.get("consequence"):
+            return mutation.get("hgvs_p"), mutation["consequence"]
+
+        edit = self._cds_edit(analyser, mutation)
+        if edit is None:
+            return None, "Unknown"
+        try:
+            consequence: ProteinConsequence = predict_consequence(
+                str(analyser.input_sequence),
+                [edit],
+                analyser.codon_table,
+                codon_start=analyser.codon_start,
+                transl_except=analyser.transl_except,
+            )
+        except ValueError:
+            return None, "Unknown"
+        return consequence.description(), consequence.label
+
+    @staticmethod
+    def _cds_edit(analyser: Analyser, mutation: Dict) -> CdsEdit | None:
+        mut_type = mutation.get("type", "sub")
+        position = mutation["position"]
+        end_position = mutation.get("end_position", position)
+        alt = (mutation.get("alt") or "").upper()
+
         if mut_type == "sub":
-            return None
-
-        if mut_type == "ins":
-            return len(mutation.get("alt", ""))
-
+            return CdsEdit(position - 1, position, alt)
         if mut_type == "del":
-            start = mutation["position"]
-            end = mutation.get("end_position", start)
-            return -(end - start + 1)
-
+            return CdsEdit(position - 1, end_position, "")
+        if mut_type == "ins":
+            return CdsEdit(position, position, alt)
         if mut_type == "delins":
-            start = mutation["position"]
-            end = mutation.get("end_position", start)
-            inserted = len(mutation.get("alt", ""))
-            deleted = end - start + 1
-            return inserted - deleted
-
+            return CdsEdit(position - 1, end_position, alt)
         if mut_type == "dup":
-            return len(mutation.get("alt", ""))
-
+            duplicated = alt or str(analyser.input_sequence[position - 1:end_position])
+            return CdsEdit(end_position, end_position, duplicated)
         return None
 
-    def _describe_indel_consequence(self, mutation: Dict) -> str | None:
-        length_change = self._indel_length_change(mutation)
-        if length_change is None:
-            return None
-        if length_change % 3 == 0:
-            return "In-frame indel"
-        return "Frameshift mutation"
+    def _indel_length_change(self, analyser: Analyser, mutation: Dict) -> int | None:
+        if "length_change" in mutation:
+            return mutation["length_change"]
 
-    def _format_length_change(self, mutation: Dict) -> str:
-        length_change = self._indel_length_change(mutation)
+        edit = self._cds_edit(analyser, mutation)
+        if edit is None:
+            return None
+        return edit.length_change
+
+    def _format_length_change(self, analyser: Analyser, mutation: Dict) -> str:
+        length_change = self._indel_length_change(analyser, mutation)
         if length_change is None:
             return "0"
         sign = "+" if length_change > 0 else ""
-        return f"{sign}{length_change} nt"
+        frame = "frameshift" if length_change % 3 else "in frame"
+        return f"{sign}{length_change} nt ({frame})"

@@ -46,6 +46,11 @@
     .aln-notice { margin:0 0 14px; padding:8px 12px; border-left:3px solid #b91c1c; background:#fef2f2; color:#7f1d1d; font-size:0.8rem; line-height:1.45; }
     .legend { display:flex; flex-wrap:wrap; gap:14px; margin:0 0 12px; padding:0; list-style:none; color:var(--muted); font-size:0.8rem; }
     .legend span { padding:1px 5px; border-radius:3px; }
+    .hgvs-list { list-style:none; padding:0; margin:0 0 10px; display:flex; flex-direction:column; gap:8px; }
+    .hgvs-list li { display:flex; flex-direction:column; gap:2px; }
+    .hgvs-list span { color:var(--muted); font-size:0.75rem; text-transform:uppercase; letter-spacing:0.06em; }
+    .hgvs-list code { overflow-wrap:anywhere; }
+    td code { overflow-wrap:anywhere; }
     @media (max-width: 900px) {
       .hero, .grid { grid-template-columns: 1fr; }
       .viewer-canvas { height: 420px; }
@@ -64,28 +69,41 @@
           <h2>Metadata</h2>
           <div><strong>Organism:</strong> __ORGANISM__</div>
           <div><strong>Gene:</strong> __GENE__</div>
+          <div><strong>Reference:</strong> __REFERENCE_SEQUENCE__</div>
+          <div><strong>Protein:</strong> __PROTEIN_REFERENCE__</div>
           <div><strong>Genome Range:</strong> __GENOME_RANGE__</div>
           <div><strong>Genetic Code:</strong> __GENETIC_CODE__</div>
+          <div><strong>HGVS Nomenclature:</strong> version __HGVS_VERSION__</div>
           <div><strong>Generated:</strong> __GENERATED_AT__</div>
         </section>
         <section class="card">
           <h2>Summary</h2>
           <ul class="stat-list">
-            <li><span>Total mutations</span><strong>__TOTAL_MUTATIONS__</strong></li>
-            <li><span>Frameshift</span><strong>__FRAMESHIFT_MUTATIONS__</strong></li>
-            <li><span>In-frame</span><strong>__INFRAME_MUTATIONS__</strong></li>
+            <li><span>Variants (DNA level)</span><strong>__TOTAL_VARIANTS__</strong></li>
             <li><span>Original PDB</span><strong>__ORIGINAL_PDB_STATUS__</strong></li>
             <li><span>Mutated PDB</span><strong>__MUTATED_PDB_STATUS__</strong></li>
           </ul>
         </section>
         <section class="card">
-          <h2>Types</h2>
+          <h2>Variant types (DNA)</h2>
           <ul class="stat-list">
-            __MUTATION_TYPE_ITEMS__
+            __VARIANT_TYPE_ITEMS__
+          </ul>
+        </section>
+        <section class="card">
+          <h2>Predicted protein consequences</h2>
+          <ul class="stat-list">
+            __CONSEQUENCE_ITEMS__
           </ul>
         </section>
         __PREDICTION_SUMMARY__
       </aside>
+
+      <div class="sidebar">
+      <section class="card">
+        <h2>HGVS description</h2>
+        __HGVS_SUMMARY__
+      </section>
 
       <section class="card">
         <h2>Protein Change</h2>
@@ -95,6 +113,7 @@
           <li><span>Unchanged residues</span><strong>__IDENTICAL_RESIDUES__</strong></li>
           <li><span>Changed residues</span><strong>__CHANGED_RESIDUES__</strong></li>
         </ul>
+        <p class="muted">Lengths count the amino acids up to the first stop codon, where translation ends; the translations below show the whole coding sequence.</p>
         <details class="raw-sequences">
           <summary>Raw protein sequences</summary>
           <h3>Original</h3>
@@ -103,6 +122,7 @@
           <pre class="sequence-block">__MUTATED_AMINO_ACID_TRANSLATION__</pre>
         </details>
       </section>
+      </div>
     </div>
 
     <section>
@@ -118,25 +138,23 @@
       </div>
     </section>
 
-    <div class="grid">
-      <section>
-        <h2>Detected Mutations</h2>
-        <table>
-          <thead><tr><th>Notation</th><th>Gene Position (c.)</th><th>Genome Position (m.)</th><th>Type</th><th>Consequence</th></tr></thead>
-          <tbody>__MUTATION_TABLE_ROWS__</tbody>
-        </table>
-      </section>
+    <section>
+      <h2>Variants (HGVS)</h2>
+      <table>
+        <thead><tr><th>Genome (m.)</th><th>Coding DNA (c.)</th><th>Protein (p., predicted)</th><th>Type</th><th>Consequence</th></tr></thead>
+        <tbody>__VARIANT_TABLE_ROWS__</tbody>
+      </table>
+    </section>
 
-      <section>
-        <h2>Viewer notes</h2>
-        <div class="card">
-          <p class="muted">
-            Toggle between the original protein, the HelixFold-predicted mutated protein, and the overlay view.
-            The overlay uses browser-side structure superposition when both PDB files are available.
-          </p>
-        </div>
-      </section>
-    </div>
+    <section>
+      <h2>Viewer notes</h2>
+      <div class="card">
+        <p class="muted">
+          Toggle between the original protein, the HelixFold-predicted mutated protein, and the overlay view.
+          The overlay uses browser-side structure superposition when both PDB files are available.
+        </p>
+      </div>
+    </section>
 
     <section>
       <h2>3D Structure</h2>

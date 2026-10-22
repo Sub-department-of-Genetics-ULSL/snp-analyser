@@ -10,9 +10,16 @@ from pathlib import Path
 
 from fastapi import APIRouter, BackgroundTasks, HTTPException, Request
 
-from backend.analyser_backend.models.report_data import ReportData
+from backend.analyser_backend.models.report_data import DescribeRequest, ReportData
 from backend.analyser_cli import Reporter, Analyser, DataManager
-from backend.analyser_cli.cds_annotation import DEFAULT_CODON_START, DEFAULT_TRANSL_TABLE
+from backend.analyser_cli.hgvs import (
+    HGVS_VERSION,
+    DescriptionResult,
+    ReferenceContext,
+    VariantDescription,
+    describe_variants,
+)
+from backend.analyser_cli.hgvs_protein import FRAMESHIFT
 from backend.analyser_cli.protein_alignment import (
     GAP as ALIGNMENT_GAP,
     align_translations,
@@ -43,25 +50,6 @@ try:
 except Exception as exc:
     HELIXFOLD_LOAD_ERROR = f"{type(exc).__name__}: {exc}"
 
-GENE_PREFIX = "c"
-GENOME_PREFIX = "m"
-SUPPORTED_PREFIXES = (GENE_PREFIX, GENOME_PREFIX)
-_PREFIX = r"(?P<prefix>[cm])\."
-SUBSTITUTION_PATTERN = re.compile(
-    rf"(?i){_PREFIX}(?P<pos>\d+)(?P<ref>[ACGT])>(?P<alt>[ACGT])"
-)
-INSERTION_PATTERN = re.compile(
-    rf"(?i){_PREFIX}(?P<left>\d+)_(?P<right>\d+)ins(?P<seq>[ACGT]+)"
-)
-DELETION_PATTERN = re.compile(
-    rf"(?i){_PREFIX}(?P<start>\d+)(?:_(?P<end>\d+))?del(?:[ACGT]+)?"
-)
-DELINS_PATTERN = re.compile(
-    rf"(?i){_PREFIX}(?P<start>\d+)(?:_(?P<end>\d+))?delins(?P<seq>[ACGT]+)"
-)
-DUPLICATION_PATTERN = re.compile(
-    rf"(?i){_PREFIX}(?P<start>\d+)(?:_(?P<end>\d+))?dup(?:[ACGT]+)?"
-)
 # The protein alignment is wrapped into lines of this many residues, grouped by five,
 # so the report never needs a horizontal scrollbar.
 ALIGNMENT_LINE_LENGTH = 60
@@ -82,348 +70,81 @@ def get_helixfold_startup_status() -> tuple[bool, str]:
     return False, reason
 
 
-def _unsupported_prefix_message(prefix: str | None) -> str:
-    supported = " or ".join(f"'{value}.'" for value in SUPPORTED_PREFIXES)
-    return (
-        f"Unsupported coordinate prefix '{prefix}.'. "
-        f"Only {supported} coordinates are supported "
-        f"('{GENE_PREFIX}.' is gene-relative, '{GENOME_PREFIX}.' is genome-absolute)."
-    )
+def get_reference_context(organism: str, gene: str) -> ReferenceContext:
+    """HGVS coordinates of a gene; ``LookupError`` when the organism or gene is unknown."""
+    try:
+        return manager.get_reference_context(organism, gene)
+    except KeyError as exc:
+        raise LookupError(f"Unknown organism '{organism}'") from exc
+    except ValueError as exc:
+        if "not found" in str(exc):
+            raise LookupError(str(exc)) from exc
+        raise
 
 
-def _unsupported_notation_message(mutation: str) -> str:
-    return (
-        f"Unsupported mutation notation: '{mutation}'. "
-        f"Every mutation requires the '{GENE_PREFIX}.' (gene-relative) or "
-        f"'{GENOME_PREFIX}.' (genome-absolute) prefix, e.g. 'm.5367C>T' or 'c.10_12del'."
-    )
+def describe_mutations(
+    organism: str, gene: str, mutations: list[str]
+) -> tuple[ReferenceContext, DescriptionResult]:
+    """Validate and normalise the HGVS descriptions submitted for one gene."""
+    context = get_reference_context(organism, gene)
+    return context, describe_variants(context, mutations)
 
 
-def _to_relative_position(position: int, prefix: str, start_genome_pos: int) -> int:
-    """Convert an HGVS position to a 1-based position relative to the gene start."""
-    if prefix == GENE_PREFIX:
-        return position
-    if prefix == GENOME_PREFIX:
-        return position - start_genome_pos + 1
-    raise ValueError(_unsupported_prefix_message(prefix))
-
-
-def _ensure_within_gene(
-    mutation: str, gene_sequence: str, start_genome_pos: int, *positions: int
-) -> None:
-    gene_length = len(gene_sequence)
-    for position in positions:
-        if position < 1 or position > gene_length:
-            raise ValueError(
-                f"Mutation '{mutation}' points to gene position {position}, which is outside "
-                f"of the gene ({GENE_PREFIX}.1..{gene_length}, "
-                f"{GENOME_PREFIX}.{start_genome_pos}..{start_genome_pos + gene_length - 1})."
+def _analyser_mutations(variants: tuple[VariantDescription, ...]) -> list[dict]:
+    """Turn normalised variants into the single-base edits the Analyser applies."""
+    mutations = []
+    for variant in variants:
+        start, end = variant.cds_start, variant.cds_end
+        if end - start == 1 and len(variant.alt) == 1:
+            mutations.append(
+                {"type": "sub", "position": start + 1, "ref": variant.ref, "alt": variant.alt}
             )
+            continue
+
+        if variant.alt:
+            # The Analyser applies edits right to left and keeps the given order for one
+            # position, so the new bases go in after the last replaced base before that
+            # base is deleted - exactly where the replaced stretch was.
+            mutations.append({"type": "ins", "position": max(end, start), "alt": variant.alt})
+        mutations.extend(
+            {"type": "del", "position": position} for position in range(end, start, -1)
+        )
+    return mutations
 
 
-def _build_sub_mutation(pos: int, ref: str, alt: str, prefix: str, start_genome_pos: int):
-    rel_pos = _to_relative_position(pos, prefix, start_genome_pos)
+def _report_mutation(variant: VariantDescription) -> dict:
+    """The variant as the report, the text sub-reports and the HelixFold cache see it."""
+    insertion = variant.cds_start == variant.cds_end
     return {
-        "type": "sub",
-        "position": rel_pos,
-        "ref": ref,
-        "alt": alt
+        "type": variant.kind,
+        "position": variant.cds_start if insertion else variant.cds_start + 1,
+        "end_position": variant.cds_end,
+        "ref": variant.ref,
+        "alt": variant.alt,
+        "hgvs_m": variant.m,
+        "hgvs_c": variant.c,
+        "hgvs_p": variant.p,
+        "consequence": variant.consequence,
+        "protein_kind": variant.protein.kind if variant.protein else None,
+        "first_residue": variant.protein.first_residue if variant.protein else None,
+        "length_change": variant.length_change,
+        "frameshift": variant.frameshift,
     }
 
 
-def _build_del_mutations(start: int, end: int, prefix: str, start_genome_pos: int):
-    rel_start = _to_relative_position(start, prefix, start_genome_pos)
-    rel_end = _to_relative_position(end, prefix, start_genome_pos)
-    if rel_end < rel_start:
-        rel_start, rel_end = rel_end, rel_start
-
-    return [
-        {
-            "type": "del",
-            "position": rel_pos,
-            "ref": None,
-            "alt": None
-        }
-        for rel_pos in range(rel_start, rel_end + 1)
-    ]
+def _frameshift_residue(variants: tuple[VariantDescription, ...]) -> int | None:
+    """The first amino acid a frameshift changes, which is where HGVS starts its ``fs``."""
+    for variant in variants:
+        if variant.protein is not None and variant.protein.kind == FRAMESHIFT:
+            return variant.protein.first_residue
+    return None
 
 
-def _build_del_mutation(start: int, end: int, prefix: str, start_genome_pos: int):
-    rel_start = _to_relative_position(start, prefix, start_genome_pos)
-    rel_end = _to_relative_position(end, prefix, start_genome_pos)
-    if rel_end < rel_start:
-        rel_start, rel_end = rel_end, rel_start
-
-    return {
-        "type": "del",
-        "position": rel_start,
-        "end_position": rel_end,
-        "ref": None,
-        "alt": None
-    }
-
-
-def _annotate_deletion(mutation: dict, deleted_length: int):
-    length_change = -deleted_length
-    mutation["deleted_length"] = deleted_length
-    mutation["length_change"] = length_change
-    mutation["frameshift"] = (deleted_length % 3) != 0
-    return mutation
-
-
-def _build_ins_mutation(pos: int, sequence: str, prefix: str, start_genome_pos: int):
-    rel_pos = _to_relative_position(pos, prefix, start_genome_pos)
-    inserted_length = len(sequence)
-    return {
-        "type": "ins",
-        "position": rel_pos,
-        "ref": None,
-        "alt": sequence,
-        "inserted_length": inserted_length,
-        "length_change": inserted_length,
-        "frameshift": (inserted_length % 3) != 0
-    }
-
-
-def _match_mutation(mutation: str):
-    """Return (kind, match) for a supported HGVS notation or raise ValueError."""
-    candidate = mutation.strip()
-    for kind, pattern in (
-        ("sub", SUBSTITUTION_PATTERN),
-        ("delins", DELINS_PATTERN),
-        ("ins", INSERTION_PATTERN),
-        ("del", DELETION_PATTERN),
-        ("dup", DUPLICATION_PATTERN),
-    ):
-        matched = pattern.fullmatch(candidate)
-        if matched:
-            return kind, matched
-
-    unsupported_prefix = re.fullmatch(r"(?i)\s*([a-z])\.\S*", candidate)
-    if unsupported_prefix:
-        prefix = unsupported_prefix.group(1).lower()
-        if prefix not in SUPPORTED_PREFIXES:
-            raise ValueError(_unsupported_prefix_message(prefix))
-    raise ValueError(_unsupported_notation_message(candidate))
-
-
-def validate_mutation_notation(mutation: str) -> None:
-    """Raise ValueError when the notation is not a supported c./m. mutation."""
-    _match_mutation(mutation)
-
-
-def _parse_mutation(mutation: str, start_genome_pos: int, gene_sequence: str):
-    report_mutations = []
-    analyser_mutations = []
-    mutation = mutation.strip()
-    kind, matched = _match_mutation(mutation)
-    prefix = matched.group("prefix").lower()
-
-    if kind == "sub":
-        pos = int(matched.group("pos"))
-        _ensure_within_gene(
-            mutation,
-            gene_sequence,
-            start_genome_pos,
-            _to_relative_position(pos, prefix, start_genome_pos),
-        )
-        parsed_sub_mutation = _build_sub_mutation(
-            pos,
-            matched.group("ref").upper(),
-            matched.group("alt").upper(),
-            prefix,
-            start_genome_pos,
-        )
-        report_mutations.append(parsed_sub_mutation)
-        analyser_mutations.append(parsed_sub_mutation)
-        return report_mutations, analyser_mutations
-
-    if kind == "delins":
-        start = int(matched.group("start"))
-        end = int(matched.group("end")) if matched.group("end") else start
-        insertion_anchor = max(start, end)
-        sequence = matched.group("seq").upper()
-        rel_start = _to_relative_position(start, prefix, start_genome_pos)
-        rel_end = _to_relative_position(end, prefix, start_genome_pos)
-        if rel_end < rel_start:
-            rel_start, rel_end = rel_end, rel_start
-        _ensure_within_gene(mutation, gene_sequence, start_genome_pos, rel_start, rel_end)
-
-        del_mutation = _build_del_mutation(start, end, prefix, start_genome_pos)
-        deleted_length = rel_end - rel_start + 1
-        inserted_length = len(sequence)
-        length_change = inserted_length - deleted_length
-        report_mutations.append(
-            del_mutation | {
-                "type": "delins",
-                "alt": sequence,
-                "deleted_length": deleted_length,
-                "inserted_length": inserted_length,
-                "length_change": length_change,
-                "frameshift": (length_change % 3) != 0
-            }
-        )
-        analyser_mutations.extend(_build_del_mutations(start, end, prefix, start_genome_pos))
-        analyser_mutations.append(
-            _build_ins_mutation(insertion_anchor, sequence, prefix, start_genome_pos)
-        )
-        return report_mutations, analyser_mutations
-
-    if kind == "ins":
-        left = int(matched.group("left"))
-        _ensure_within_gene(
-            mutation,
-            gene_sequence,
-            start_genome_pos,
-            _to_relative_position(left, prefix, start_genome_pos),
-        )
-        ins_mutation = _build_ins_mutation(
-            left,
-            matched.group("seq").upper(),
-            prefix,
-            start_genome_pos,
-        )
-        report_mutations.append(ins_mutation)
-        analyser_mutations.append(ins_mutation)
-        return report_mutations, analyser_mutations
-
-    if kind == "del":
-        start = int(matched.group("start"))
-        end = int(matched.group("end")) if matched.group("end") else start
-        _ensure_within_gene(
-            mutation,
-            gene_sequence,
-            start_genome_pos,
-            _to_relative_position(start, prefix, start_genome_pos),
-            _to_relative_position(end, prefix, start_genome_pos),
-        )
-        deleted_length = abs(end - start) + 1
-        report_mutations.append(
-            _annotate_deletion(_build_del_mutation(start, end, prefix, start_genome_pos), deleted_length)
-        )
-        analyser_mutations.extend(_build_del_mutations(start, end, prefix, start_genome_pos))
-        return report_mutations, analyser_mutations
-
-    start = int(matched.group("start"))
-    end = int(matched.group("end")) if matched.group("end") else start
-    insertion_anchor = max(start, end)
-
-    rel_start = _to_relative_position(start, prefix, start_genome_pos)
-    rel_end = _to_relative_position(end, prefix, start_genome_pos)
-    if rel_end < rel_start:
-        rel_start, rel_end = rel_end, rel_start
-    _ensure_within_gene(mutation, gene_sequence, start_genome_pos, rel_start, rel_end)
-
-    duplicated_sequence = gene_sequence[rel_start - 1:rel_end]
-    duplicated_length = rel_end - rel_start + 1
-    report_mutations.append({
-        "type": "dup",
-        "position": rel_start,
-        "end_position": rel_end,
-        "ref": None,
-        "alt": duplicated_sequence,
-        "duplicated_length": duplicated_length,
-        "length_change": duplicated_length,
-        "frameshift": (duplicated_length % 3) != 0
-    })
-    analyser_mutations.append(
-        _build_ins_mutation(insertion_anchor, duplicated_sequence, prefix, start_genome_pos)
-    )
-    return report_mutations, analyser_mutations
-
-
-def _build_report_notation(mutation: dict, start_genome_pos: int):
-    """Build the genome-absolute (m.) HGVS notation for a gene-relative mutation."""
-    mut_type = mutation.get("type", "sub")
-    rel_pos = _get_required_position(mutation)
-    rel_end_pos = int(mutation.get("end_position", rel_pos))
-    pos = start_genome_pos + rel_pos - 1
-    end_pos = start_genome_pos + rel_end_pos - 1
-    locus = f"{pos}" if pos == end_pos else f"{pos}_{end_pos}"
-    if mut_type == "sub":
-        return f"{GENOME_PREFIX}.{pos}{mutation.get('ref', '?')}>{mutation.get('alt', '?')}"
-    if mut_type == "del":
-        return f"{GENOME_PREFIX}.{locus}del"
-    if mut_type == "ins":
-        return f"{GENOME_PREFIX}.{pos}_{pos + 1}ins{mutation.get('alt', '')}"
-    if mut_type == "delins":
-        return f"{GENOME_PREFIX}.{locus}delins{mutation.get('alt', '')}"
-    if mut_type == "dup":
-        return f"{GENOME_PREFIX}.{locus}dup"
-    return f"{GENOME_PREFIX}.{pos}?"
-
-
-def _get_required_position(mutation: dict) -> int:
-    pos = mutation.get("position")
-    if pos is None:
-        raise ValueError("Mutation position is required")
-    return int(pos)
-
-
-def _format_position_range(start: int, end: int | None = None) -> str:
-    final_end = start if end is None else end
-    return str(start) if start == final_end else f"{start}_{final_end}"
-
-
-def _build_genome_position_display(mutation: dict, start_genome_pos: int) -> str:
-    pos = _get_required_position(mutation)
-    end_pos = int(mutation.get("end_position", pos))
-    genome_start = start_genome_pos + pos - 1
-    genome_end = start_genome_pos + end_pos - 1
-    mut_type = mutation.get("type", "sub")
-
-    if mut_type == "ins":
-        return f"{genome_start}_{genome_start + 1}"
-
-    return _format_position_range(genome_start, genome_end)
-
-
-def _build_gene_position_display(mutation: dict) -> str:
-    pos = _get_required_position(mutation)
-    if mutation.get("type", "sub") == "ins":
-        return f"{pos}_{pos + 1}"
-
-    return _format_position_range(pos, mutation.get("end_position"))
-
-
-def _build_report_consequence(mutation: dict):
-    mut_type = mutation.get("type", "sub")
-    if mut_type == "sub":
-        return "Substitution"
-    if mutation.get("frameshift") is True:
-        return "Frameshift mutation"
-    if mut_type in {"del", "ins", "delins", "dup"}:
-        return "In-frame indel"
-    return mut_type.upper()
-
-
-def _frameshift_residue(report_mutations: list[dict], coding_offset: int) -> int | None:
-    """Return the first residue of the original protein that is read in another frame."""
-    disturbed = [
-        _first_disturbed_base(mutation)
-        for mutation in report_mutations
-        if mutation.get("frameshift") is True
-    ]
-    if not disturbed:
-        return None
-
-    # Everything before the earliest frameshift is still translated the way it always was.
-    return (min(disturbed) - 1 - coding_offset) // 3 + 1
-
-
-def _first_disturbed_base(mutation: dict) -> int:
-    """Return the gene-relative position of the first base a frameshifting indel moves."""
-    position = _get_required_position(mutation)
-    mut_type = mutation.get("type", "sub")
-
-    # An insertion and a duplication are placed after their anchor, so the anchor itself
-    # still belongs to the untouched part of the gene, while a deletion starts on it.
-    if mut_type == "ins":
-        return position + 1
-    if mut_type == "dup":
-        return int(mutation.get("end_position", position)) + 1
-
-    return position
+def _genome_range(context: ReferenceContext) -> str:
+    first, last = context.first_genome_position, context.last_genome_position
+    if context.strand == -1:
+        return f"complement({last}..{first})"
+    return f"{first}..{last}"
 
 
 def _build_static_url(path: Path) -> str:
@@ -535,67 +256,95 @@ def _build_divergence_notice(alignment) -> str:
         return ""
 
     if alignment.divergence_reason == "truncation":
+        kept = alignment.mutated_length
+        lost = alignment.original_length - kept
         explanation = (
-            f"A premature stop codon ends the mutated protein at residue "
-            f"{alignment.mutated_length}, so the remaining "
-            f"{alignment.original_length - alignment.mutated_length} residues of the "
-            f"original are lost rather than changed."
+            f"A premature stop codon at codon {kept + 1} ends the mutated peptide after "
+            f"{kept} amino acid{'' if kept == 1 else 's'}, so the remaining {lost} "
+            f"residue{' of the original is' if lost == 1 else 's of the original are'} "
+            f"lost rather than changed."
         )
     else:
         explanation = (
-            f"A frameshift starts at residue {alignment.divergence_start}. Everything "
-            f"after it is read in another frame, so the two tails are different peptides "
-            f"and are shown side by side instead of aligned residue by residue."
+            f"The frameshift changes the protein from residue {alignment.divergence_start} on "
+            f"(the first amino acid changed, where HGVS starts its 'fs' description). "
+            f"Everything after it is read in another frame, so the two tails are different "
+            f"peptides and are shown side by side instead of aligned residue by residue."
         )
 
     return f'<p class="aln-notice">{html.escape(explanation)}</p>'
+
+
+def _count_items(values: list[str]) -> str:
+    counts: dict[str, int] = {}
+    for value in values:
+        counts[value] = counts.get(value, 0) + 1
+    return "".join(
+        f"<li><span>{html.escape(key)}</span><strong>{count}</strong></li>"
+        for key, count in sorted(counts.items())
+    )
+
+
+def _build_hgvs_summary(context: ReferenceContext, result: DescriptionResult) -> str:
+    """The variants of the report together as one allele, with the references used."""
+    coding = result.allele_c
+    if not context.c_available:
+        coding = f"not available: {context.c_unavailable_reason}"
+    rows = [
+        ("Genome (m.)", result.allele_m),
+        ("Coding DNA (c.)", coding),
+        ("Protein (p., predicted)", result.allele_p),
+    ]
+    items = "".join(
+        f"<li><span>{html.escape(label)}</span><code>{html.escape(value or 'n/a')}</code></li>"
+        for label, value in rows
+    )
+    references = [f"{context.accession} (genome, m.)"]
+    if context.c_available:
+        references.append(f"{context.symbol} CDS annotated in {context.accession} (c.)")
+    if context.protein_id:
+        references.append(f"{context.protein_id} (protein, p.)")
+    note = (
+        f"All variants are in cis (one mitochondrial DNA molecule). Reference sequences: "
+        f"{', '.join(references)}. Descriptions follow HGVS Nomenclature version {HGVS_VERSION}; "
+        f"protein changes are predicted, hence the parentheses."
+    )
+    return f'<ul class="hgvs-list">{items}</ul><p class="muted">{html.escape(note)}</p>'
 
 
 def _build_report_html(
     organism: str,
     gene: str,
     report_text: str,
-    report_mutations: list[dict],
+    context: ReferenceContext,
+    result: DescriptionResult,
     amino_acid_translation: str,
     *,
     mutated_amino_acid_translation: str,
-    start_genome_pos: int,
-    end_genome_pos: int,
     genetic_code: str,
     original_pdb_path: Path | None,
     mutated_pdb_path: Path | None,
     mutated_prediction: HelixFoldPrediction | None,
-    coding_offset: int = 0,
 ):
-    total_mutations = len(report_mutations)
-    frameshift_mutations = sum(1 for mutation in report_mutations if mutation.get("frameshift") is True)
-    inframe_mutations = total_mutations - frameshift_mutations
-    mutation_type_counts: dict[str, int] = {}
-    for mutation in report_mutations:
-        mutation_type = mutation.get("type", "unknown").upper()
-        mutation_type_counts[mutation_type] = mutation_type_counts.get(mutation_type, 0) + 1
-
+    variants = result.variants
     original_pdb_url = _build_static_url(original_pdb_path) if original_pdb_path else None
     mutated_pdb_url = _build_static_url(mutated_pdb_path) if mutated_pdb_path else None
     prediction_available = mutated_pdb_url is not None
     alignment = align_translations(
         amino_acid_translation,
         mutated_amino_acid_translation,
-        frameshift_residue=_frameshift_residue(report_mutations, coding_offset),
+        frameshift_residue=_frameshift_residue(variants),
     )
 
-    mutation_rows = []
-    for mutation in report_mutations:
-        gene_position = _build_gene_position_display(mutation)
-        genome_position = _build_genome_position_display(mutation, start_genome_pos)
-        mutation_rows.append(
-            f"<tr><td>{html.escape(_build_report_notation(mutation, start_genome_pos))}</td>"
-            f"<td>{html.escape(gene_position)}</td>"
-            f"<td>{html.escape(genome_position)}</td>"
-            f"<td>{html.escape(mutation.get('type', '').upper())}</td>"
-            f"<td>{html.escape(_build_report_consequence(mutation))}</td></tr>"
-        )
-    mutation_table_rows = "\n".join(mutation_rows) or "<tr><td colspan='5'>No mutations</td></tr>"
+    variant_rows = [
+        f"<tr><td>{html.escape(variant.m)}</td>"
+        f"<td>{html.escape(variant.c or 'n/a')}</td>"
+        f"<td>{html.escape(variant.p or 'n/a')}</td>"
+        f"<td>{html.escape(variant.kind)}</td>"
+        f"<td>{html.escape(variant.consequence)}</td></tr>"
+        for variant in variants
+    ]
+    variant_table_rows = "\n".join(variant_rows) or "<tr><td colspan='5'>No variants</td></tr>"
 
     prediction_summary = ""
     if mutated_prediction is not None:
@@ -631,10 +380,6 @@ def _build_report_html(
         "metadata": mutated_prediction.metadata if mutated_prediction is not None else None,
     }
 
-    mutation_type_items = "".join(
-        f"<li><span>{html.escape(key)}</span><strong>{count}</strong></li>"
-        for key, count in sorted(mutation_type_counts.items())
-    )
     viewer_initial_note = (
         "Original and mutated structures are available."
         if prediction_available and original_pdb_url
@@ -646,16 +391,19 @@ def _build_report_html(
             "TITLE_ORGANISM": html.escape(organism),
             "TITLE_GENE": html.escape(gene),
             "ORGANISM": html.escape(organism),
-            "GENE": html.escape(gene),
-            "GENOME_RANGE": html.escape(f"{start_genome_pos}..{end_genome_pos}"),
+            "GENE": html.escape(gene if gene == context.symbol else f"{gene} ({context.symbol})"),
+            "REFERENCE_SEQUENCE": html.escape(context.accession),
+            "PROTEIN_REFERENCE": html.escape(context.protein_id or "n/a"),
+            "GENOME_RANGE": html.escape(_genome_range(context)),
             "GENETIC_CODE": html.escape(genetic_code),
+            "HGVS_VERSION": html.escape(HGVS_VERSION),
             "GENERATED_AT": html.escape(datetime.now(timezone.utc).isoformat()),
-            "TOTAL_MUTATIONS": str(total_mutations),
-            "FRAMESHIFT_MUTATIONS": str(frameshift_mutations),
-            "INFRAME_MUTATIONS": str(inframe_mutations),
+            "TOTAL_VARIANTS": str(len(variants)),
             "ORIGINAL_PDB_STATUS": "available" if original_pdb_url else "missing",
             "MUTATED_PDB_STATUS": "available" if prediction_available else "missing",
-            "MUTATION_TYPE_ITEMS": mutation_type_items,
+            "VARIANT_TYPE_ITEMS": _count_items([variant.kind for variant in variants]),
+            "CONSEQUENCE_ITEMS": _count_items([variant.consequence for variant in variants]),
+            "HGVS_SUMMARY": _build_hgvs_summary(context, result),
             "PREDICTION_SUMMARY": prediction_summary,
             "AMINO_ACID_TRANSLATION": html.escape(amino_acid_translation),
             "MUTATED_AMINO_ACID_TRANSLATION": html.escape(
@@ -666,7 +414,7 @@ def _build_report_html(
             "MUTATED_PROTEIN_LENGTH": str(alignment.mutated_length),
             "CHANGED_RESIDUES": str(alignment.changed_residues),
             "IDENTICAL_RESIDUES": str(alignment.identical_residues),
-            "MUTATION_TABLE_ROWS": mutation_table_rows,
+            "VARIANT_TABLE_ROWS": variant_table_rows,
             "ORIGINAL_BUTTON_DISABLED": "disabled" if not original_pdb_url else "",
             "MUTATED_BUTTON_DISABLED": "disabled" if not prediction_available else "",
             "OVERLAY_BUTTON_DISABLED": (
@@ -967,26 +715,20 @@ def _predict_mutated_structure(
 
 
 def _generate_report_components(data: ReportData):
-    gene_data = manager.get_gene_for_organism(data.organism, data.gene)
-    gene_sequence = gene_data["sequence"]
-    start_genome_pos = gene_data.get("startInGenome", 1)
-    end_genome_pos = gene_data.get("endInGenome", start_genome_pos + len(gene_sequence) - 1)
+    context, result = describe_mutations(data.organism, data.gene, data.mutations)
+    result.raise_for_errors()
+    if not result.variants:
+        raise ValueError("At least one variant is required")
 
+    gene_sequence = context.cds_sequence
     analyser = Analyser(
         gene_sequence,
-        transl_table=gene_data.get("translTable", DEFAULT_TRANSL_TABLE),
-        codon_start=gene_data.get("codonStart", DEFAULT_CODON_START),
-        transl_except=gene_data.get("translExcept"),
+        transl_table=context.transl_table,
+        codon_start=context.codon_start,
+        transl_except=context.transl_except,
     )
-
-    report_mutations = []
-    parsed_mutations = []
-    for mutation in data.mutations:
-        report_items, analyser_items = _parse_mutation(mutation, start_genome_pos, gene_sequence)
-        report_mutations.extend(report_items)
-        parsed_mutations.extend(analyser_items)
-
-    analyser.apply_mutations(parsed_mutations)
+    analyser.apply_mutations(_analyser_mutations(result.variants))
+    report_mutations = [_report_mutation(variant) for variant in result.variants]
     report_text = reporter.generate_report(analyser, report_mutations)
     mutated_prediction = None
 
@@ -999,11 +741,7 @@ def _generate_report_components(data: ReportData):
             analyser=analyser,
         )
 
-
-    gene_context = {
-        "start_genome_pos": start_genome_pos,
-        "end_genome_pos": end_genome_pos,
-    }
+    gene_context = {"context": context, "result": result}
     return report_text, report_mutations, analyser, mutated_prediction, gene_context
 
 
@@ -1023,23 +761,21 @@ def _process_report_job(job_id: str):
         )
 
     try:
-        report_text, report_mutations, analyser, mutated_prediction, gene_context = _generate_report_components(payload)
+        report_text, _, analyser, mutated_prediction, gene_context = _generate_report_components(payload)
         original_pdb_path = _build_original_pdb_path(payload.organism, payload.gene)
         mutated_pdb_path = mutated_prediction.mutated_pdb_path if mutated_prediction else None
         html_report = _build_report_html(
             payload.organism,
             payload.gene,
             report_text,
-            report_mutations,
+            gene_context["context"],
+            gene_context["result"],
             str(analyser.amino_acid_translation),
             mutated_amino_acid_translation=str(analyser.mutated_amino_acid_translation or ""),
-            start_genome_pos=gene_context["start_genome_pos"],
-            end_genome_pos=gene_context["end_genome_pos"],
             genetic_code=analyser.genetic_code_description,
             original_pdb_path=original_pdb_path if original_pdb_path.exists() else None,
             mutated_pdb_path=mutated_pdb_path if mutated_pdb_path and mutated_pdb_path.exists() else None,
             mutated_prediction=mutated_prediction,
-            coding_offset=analyser.coding_offset,
         )
         report_file_path = REPORTS_DIR / f"{job_id}.html"
         report_file_path.write_text(html_report, encoding="utf-8")
@@ -1061,16 +797,44 @@ def _process_report_job(job_id: str):
                 failed_job["updated_at"] = datetime.now(timezone.utc).isoformat()
 
 
+def _reference_payload(context: ReferenceContext) -> dict:
+    return {
+        "accession": context.accession,
+        "gene": context.gene,
+        "symbol": context.symbol,
+        "proteinId": context.protein_id,
+        "strand": context.strand,
+        "codingNumberingAvailable": context.c_available,
+        "cdsStartInGenome": context.first_genome_position,
+        "cdsEndInGenome": context.last_genome_position,
+    }
+
+
+@router.post("/hgvs/describe", tags=["hgvs"])
+def describe_hgvs(data: DescribeRequest):
+    """Validate HGVS descriptions of one gene and return them normalised (m., c. and p.)."""
+    try:
+        context, result = describe_mutations(data.organism, data.gene, data.mutations)
+    except LookupError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    return result.to_dict() | {"reference": _reference_payload(context)}
+
+
 @router.post("/report/jobs", tags=["report"])
 def create_report_job(data: ReportData, background_tasks: BackgroundTasks, request: Request):
     if not data.mutations:
-        raise HTTPException(status_code=400, detail="At least one mutation is required")
+        raise HTTPException(status_code=400, detail="At least one variant is required")
 
-    for mutation in data.mutations:
-        try:
-            validate_mutation_notation(mutation)
-        except ValueError as exc:
-            raise HTTPException(status_code=400, detail=str(exc)) from exc
+    try:
+        _, result = describe_mutations(data.organism, data.gene, data.mutations)
+        result.raise_for_errors()
+    except LookupError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
 
     job_id = uuid.uuid4().hex
     job_payload = _create_job_payload(job_id, data, str(request.base_url).rstrip("/"))
@@ -1113,6 +877,8 @@ def get_report_job(job_id: str, request: Request):
 def generate_report(data: ReportData):
     try:
         report_text, _, _, _, _ = _generate_report_components(data)
+    except LookupError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     return report_text

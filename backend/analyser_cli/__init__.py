@@ -12,6 +12,15 @@ from .cds_annotation import (
     genetic_code_name,
     read_cds_annotation,
 )
+from .hgvs import (
+    HGVS_VERSION,
+    DescriptionResult,
+    HgvsError,
+    ReferenceContext,
+    VariantDescription,
+    describe_variants,
+)
+from .hgvs_protein import ProteinConsequence, predict_consequence
 from .protein_alignment import ProteinAlignment, align_translations, group_residues
 from .reporter import Reporter, SubReport, ReportFormatter
 from .fasta_reader import FastaReader
@@ -24,6 +33,14 @@ __all__ = [
     'TranslationException',
     'genetic_code_name',
     'read_cds_annotation',
+    'HGVS_VERSION',
+    'DescriptionResult',
+    'HgvsError',
+    'ReferenceContext',
+    'VariantDescription',
+    'describe_variants',
+    'ProteinConsequence',
+    'predict_consequence',
     'ProteinAlignment',
     'align_translations',
     'group_residues',

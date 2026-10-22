@@ -8,7 +8,9 @@ A comprehensive bioinformatics tool for analyzing Single Nucleotide Polymorphism
 - **Multi-Organism Support**: Pre-configured for human, dog, house mouse, zebrafish, fruit fly, and roundworm mitochondrial genomes
 - **Automatic Genome Management**: Downloads GenBank files from NCBI on demand
 - **Mutation Effect Prediction**: Analyze the impact of SNPs on amino acid sequences
-- **Multiple Mutation Types**: Support for substitutions, deletions, and insertions
+- **Multiple Mutation Types**: Support for substitutions, deletions, insertions, duplications, deletion-insertions, inversions and repeats
+- **HGVS Nomenclature (version 21.1)**: Every variant is validated against the reference sequence, normalised (3' rule, duplications, repeats, merged neighbours) and reported as `m.`, `c.` and predicted `p.` descriptions on public reference sequences (`NC_012920.1:m.8993T>G`, `NC_012920.1(MT-ATP6):c.467T>G`, `YP_003024031.1:p.(Leu156Arg)`)
+- **Both Strands**: Genes annotated as `complement(a..b)` in GenBank are read in transcription order, with `c.` numbering running down the genome
 - **Codon Table Support**: Uses appropriate genetic codes (Standard, Vertebrate Mitochondrial and Invertebrate Mitochondrial)
 - **Comprehensive Reporting**: Modular reporting system with multiple analysis types
 - **Physicochemical Properties**: Analyze changes in peptide properties (requires R and Peptides package)
@@ -131,6 +133,22 @@ report = reporter.generate_report(analyser, mutations)
 print(report)
 ```
 
+#### Describing Variants with HGVS
+
+```python
+from backend.analyser_cli import DataManager, describe_variants
+
+# The HGVS coordinates of a gene: genome accession, strand, c. numbering, protein accession
+context = DataManager().get_reference_context("homo_sapiens", "ND6")
+
+result = describe_variants(context, ["m.14484T>C", "c.190a>g"])
+variant = result.variants[0]
+print(variant.m, variant.c, variant.p)
+# NC_012920.1:m.14484T>C NC_012920.1(MT-ND6):c.190A>G YP_003024037.1:p.(Met64Val)
+print(result.errors[0].message)
+# 'c.190a>g': HGVS descriptions are case-sensitive - ...
+```
+
 #### Web Interface
 On MacOS, if you encounter problems with loading R:
 ```bash
@@ -151,11 +169,11 @@ The web interface provides:
 - **Organism & Gene Selection**: Choose from pre-configured organisms and their genes
 - **Interactive Mutation Designer**: Click on nucleotides to apply mutations
 - **Dual-Column Visualization**: Compare reference and mutated sequences side-by-side
-- **Coordinate Display**: Shows both gene-relative and genome-absolute positions
+- **Coordinate Display**: Shows both the coding DNA (`c.`) and the genome (`m.`) position of every base, counting down the genome for genes on the complement strand
 - **Asynchronous Report Queue**: Reports are generated in background and tracked in a pending queue
 - **HTML Reports**: Completed reports open in a new browser tab
 - **3D Protein Viewer**: HTML report renders original protein structure from local PDB files (if available)
-- **HGVS DNA Notation**: Input mutations using `m.` (genome-absolute) or `c.` (gene-relative) notation like "m.5367C>T", "c.3_4insATG"
+- **HGVS Notation**: Input variants as HGVS `m.` (mitochondrial genome) or `c.` (coding DNA) descriptions like "m.8993T>G", "c.3_4insATG"; every edit is shown normalised with its `m.`, `c.` and `p.` description
 
 
 ## 📊 Analysis Types
@@ -163,12 +181,15 @@ The web interface provides:
 ### Mutation Effects Analysis
 - **Base Changes**: Track nucleotide substitutions, deletions, and insertions
 - **Codon Impact**: Analyze effects on genetic codons
-- **Amino Acid Changes**: Predict protein sequence alterations
-- **Effect Classification**: 
-  - Silent (synonymous) mutations
-  - Missense mutations
-  - Nonsense (stop codon) mutations
-  - Readthrough mutations
+- **Amino Acid Changes**: Predict protein sequence alterations as HGVS `p.` descriptions
+- **Effect Classification** (derived from the predicted protein, as HGVS describes it):
+  - Synonymous (silent) - `p.(Leu54=)`
+  - Missense - `p.(Leu156Arg)`
+  - Nonsense (premature stop codon) - `p.(Trp24Ter)`, also when a frameshift creates an immediate stop codon
+  - Stop codon lost (extension) - `p.(Ter227GlnextTer?)`, including a poly(A)-completed `T--`/`TA-` stop codon
+  - Frameshift - `p.(Leu22ThrfsTer43)`, starting at the first changed amino acid
+  - In-frame deletion, insertion, duplication or deletion-insertion - `p.(Asn4del)`, `p.(Met3_His4insGlyTer)`
+  - Start codon changed - `p.(Met1?)`, the consequence cannot be predicted
 
 ### Physicochemical Properties Analysis (Optional)
 When R and the Peptides package are installed, the reporter includes:
@@ -198,6 +219,7 @@ Original Sequence: ATGCGATCGTAA
 ------------------------------ Mutation Effects ------------------------------
 
 DNA Sequence Type: Mitochondrial
+Genetic Code: Vertebrate Mitochondrial (NCBI transl_table=2)
 Original Sequence Length: 12 bp
 Number of Mutations: 2
 
@@ -205,22 +227,32 @@ Number of Mutations: 2
 MUTATION DETAILS:
 ........................................
 
-Mutation #1 (SUB):
-  Position: 3
-  Change: G -> T
-  Codon Position: Codon 1, Position 3
-  Original Codon: ATG
-  Mutated Codon: ATT
-  Original Amino Acid: M
-  Mutated Amino Acid: I
-  Effect Type: Missense (amino acid change)
+Mutation #1 (SUBSTITUTION):
+  Position: 6
+  Change: A -> G
+  Codon Position: Codon 2, Position 3
+  Codon: CGA -> CGG
+  Amino Acid: Arg -> Arg
+  HGVS (protein): p.(Arg2=)
+  Effect Type: Synonymous (silent)
 
-Mutation #2 (DEL):
+Mutation #2 (DELETION):
   Position: 8
   Change: Deletion of C
-  Effect Type: Frameshift mutation
+  Length Change: -1 nt (frameshift)
+  HGVS (protein): p.(Ser3CysfsTer?)
+  Effect Type: Frameshift
+
 
 ........................................
+AMINO ACID TRANSLATION SUMMARY:
+........................................
+Original: MRS*
+ Mutated: MRC
+
+Peptide Length: 3 -> 3 amino acids (up to the first stop codon)
+
+------------------------------------------------------------
 
 ----------------------------- Physicochemical Properties -----------------------------
 
@@ -235,6 +267,13 @@ Change: ↓
 
 ================================================================================
 ```
+
+The translation summary shows the whole translation of the coding sequence, but the
+**peptide length** counts only the amino acids before the first stop codon, where translation
+ends. A premature stop codon therefore shortens the peptide even though the rest of the read
+frame is still displayed: the substitution at position 4 (`c.4C>A`, `CGA` > `AGA`, a stop
+codon in the vertebrate mitochondrial code) gives `Mutated: M*S*` and
+`Peptide Length: 3 -> 1 amino acid`. A stop codon is not an amino acid, so it is never counted.
 
 ### HTML Report
 
@@ -252,15 +291,15 @@ MUTATED     1 MPMAN LLLLI VPI-I AMAFL MLTER KILGY MQLCK GPNVV GPYGL LQPFA  49
 - residues are grouped in blocks of five and wrapped into lines of 60, so nothing has to be
   scrolled horizontally,
 - every line is numbered on both sides with its own residue positions, which stay correct
-  even when an indel shifts the mutated protein,
+  even when an insertion or deletion shifts the mutated protein,
 - a changed residue is highlighted and marked with `|` on the line below,
 - `-` marks a gap, i.e. a residue that was inserted or deleted,
-- a "Protein Change" card summarises both lengths and the number of changed/unchanged
-  residues, and the raw sequences stay available in a collapsed `Raw protein sequences`
-  block for copy-pasting.
+- a "Protein Change" card summarises both peptide lengths (counted up to the first stop
+  codon, like in the text report) and the number of changed/unchanged residues, and the raw
+  sequences stay available in a collapsed `Raw protein sequences` block for copy-pasting.
 
 Pairwise alignment only holds while both translations stay homologous, which is the case
-for an in-frame indel. Two mutations break that assumption and are therefore anchored on
+for an in-frame insertion or deletion. Two kinds of variants break that assumption and are therefore anchored on
 the residues they share instead of being aligned:
 
 - a **frameshift** reads the rest of the gene in another frame, so the tail is a different
@@ -282,11 +321,12 @@ MUTATED   121 LLVMM TAFVG MRPSM GPNII L*GHS NY*PI IGRSL RG*YP SAMNL *GILS 170
                           ^
 ```
 
-The split point is taken from the mutation itself - the first codon read in another frame -
-not from the first residue that happens to differ, so an earlier substitution or in-frame
-indel does not drag the anchor forward.
+The split point is taken from the mutation itself - the first amino acid the frameshift
+changes, which is where HGVS starts its `fs` description - not from the first residue that
+happens to differ anywhere, so an earlier substitution or in-frame deletion does not drag
+the anchor forward.
 
-Gaps are also pushed to the rightmost position that describes the same indel, so a residue
+Gaps are also pushed to the rightmost position that describes the same insertion or deletion, so a residue
 deleted from a repeat is numbered the way HGVS names it in the mutation table.
 
 ## 🌐 Web Interface Features
@@ -295,8 +335,9 @@ deleted from a repeat is numbered the way HGVS names it in the mutation table.
 - **Gene Browser**: Select specific genes from mitochondrial genomes
 - **Dual-Column Visualization**: Side-by-side comparison of reference and mutated sequences
 - **Interactive Mutation Designer**: Click on nucleotides to substitute, delete, or insert
-- **Position Tooltips**: Hover to see gene-relative and genome-absolute coordinates
-- **HGVS DNA Notation Input**: Batch input mutations using `m.` or `c.` notation like "m.5367C>T", "c.3_4insATG"
+- **Position Tooltips**: Hover to see the `c.` (coding DNA) and `m.` (genome) coordinates
+- **HGVS Notation Input**: Batch input variants as HGVS descriptions like "NC_012920.1:m.8993T>G", "c.3_4insATG" or "m.[8993T>G;9000del]"
+- **Normalised Variant List**: Every edit is described by the backend as `m.`, `c.` and predicted `p.`; edits that touch each other are merged as HGVS requires
 - **Real-time Analysis**: Generate comprehensive reports on-the-fly
 - **Modern Dark UI**: Professional interface optimized for long sequences
 - **Responsive Design**: Works on desktop and mobile devices
@@ -310,6 +351,12 @@ The FastAPI backend provides the following endpoints:
 - `GET /organisms/{latin_name}/` - List genes for a specific organism
 - `GET /organisms/{latin_name}/{gene}/` - Get sequence data for a specific gene
 
+### HGVS
+- `POST /hgvs/describe` - Validate and normalise HGVS descriptions of one gene; returns every variant as `m.`, `c.` and predicted `p.`, the allele of all variants, and the errors per input
+  ```json
+  {"organism": "homo_sapiens", "gene": "ND6", "mutations": ["m.14484T>C"]}
+  ```
+
 ### Report Generation
 - `POST /report/` - Generate text analysis report (legacy synchronous endpoint)
 - `POST /report/jobs` - Queue asynchronous HTML report generation
@@ -319,7 +366,7 @@ The FastAPI backend provides the following endpoints:
   {
     "organism": "homo_sapiens",
     "gene": "CYTB",
-    "mutations": ["m.14747G>A", "m.14766C>T", "m.14750_14751insATG", "c.5del"]
+    "mutations": ["NC_012920.1:m.14747T>C", "m.14766C>T", "m.14750_14751insATG", "c.5del"]
   }
   ```
 
@@ -348,26 +395,76 @@ Mutations are specified as dictionaries with the following structure:
 {"type": "ins", "position": 10, "alt": "ATG"}
 ```
 
-### Web API Format (HGVS DNA)
-The web interface accepts DNA-level HGVS notation with exactly two coordinate prefixes:
+### Web API Format (HGVS, version 21.1)
+Variants are described with the [HGVS Nomenclature](https://hgvs-nomenclature.org) version 21.1
+on public reference sequences taken from the GenBank record of the genome:
 
-- **`m.`** — absolute position in the mitochondrial genome
-- **`c.`** — position relative to the start of the gene (1-based)
+| Level | Reference | Example |
+| --- | --- | --- |
+| Genome (`m.`) | the mitochondrial genome, plus strand | `NC_012920.1:m.8993T>G` |
+| Coding DNA (`c.`) | the CDS annotated in that genome, specified by its gene symbol (allowed by exception for mitochondrial genomes) | `NC_012920.1(MT-ATP6):c.467T>G` |
+| Protein (`p.`, predicted) | the `/protein_id` of the CDS | `YP_003024031.1:p.(Leu156Arg)` |
 
-Every mutation must carry one of these prefixes; unprefixed and legacy forms
-(`5del`, `del.5`, `ins.10_11ATG`) are rejected with HTTP 400.
+- **`m.`** - position in the mitochondrial genome, always on the plus strand.
+- **`c.`** - position in the coding DNA: `c.1` is the first nucleotide of the start codon,
+  positions after the stop codon are `c.*1`, `c.*2`, ... A CDS annotated as incomplete
+  (e.g. `<1474..3009`) has no `c.` numbering, only `m.` descriptions are accepted for it.
+- The gene symbol is the official one from the GenBank `/nomenclature` qualifier (HGNC
+  `MT-ATP6`, MGI `mt-Atp6`, ZFIN `mt-atp6`); the GenBank gene name is used when there is none.
 
-- **Substitution**: `"m.5367C>T"`, `"c.10A>G"`
-- **Deletion**: `"m.5444del"`, `"c.10_12del"`
-- **Insertion**: `"m.14750_14751insATG"`, `"c.10_11insATG"`
-- **Delins**: `"m.14750_14752delinsT"`, `"c.10delinsGG"`
-- **Duplication**: `"m.150_152dup"`, `"c.10dup"`
+**Genes on the complement strand.** A GenBank `complement(a..b)` location is read in
+transcription order, so the genome numbering is reversed for `c.`: `c.1` is genome position
+`b` and `c.N` is `b - N + 1`. `m.` descriptions keep plus-strand positions and bases, e.g. the
+LHON variant in *MT-ND6*, `complement(14149..14673)`:
+`NC_012920.1:m.14484T>C` = `NC_012920.1(MT-ND6):c.190A>G` = `YP_003024037.1:p.(Met64Val)`.
 
-`m.` positions are converted to gene-relative positions using the gene start in the genome
-(`gene_position = m_position - gene_start_in_genome + 1`), so `m.` and `c.` notations that point
-to the same nucleotide are fully equivalent. Positions resolving outside the selected gene are
-rejected. Generated reports always list mutations in genome-absolute `m.` notation and show both
-the gene (`c.`) and genome (`m.`) position in separate columns.
+**Accepted input.** Every description needs the `m.` or `c.` prefix and may carry its
+reference sequence (`NC_012920.1:m.`, `NC_012920.1(MT-ATP6):c.`); several variants of one
+molecule can be given as an allele, `m.[8993T>G;9000del]`. Supported variant types are
+substitution (`c.10A>G`), deletion (`c.10del`, `c.10_12del`), duplication (`c.10dup`),
+insertion (`c.10_11insA`), deletion-insertion (`c.10_12delinsTT`), inversion (`c.10_13inv`) and
+repeat (`c.10_12CAG[4]`). HGVS is applied strictly, so the following are rejected with an
+explanation (HTTP 400 for report jobs):
+
+- a reference nucleotide or a listed deleted/duplicated sequence that does not match the
+  reference (`m.8993G>T` when the reference is T), or a change that changes nothing (`c.10A>A`),
+- wrong case (`C.10A>G`, `c.10a>g`, `c.10DEL`), leading zeros, spaces,
+- insertions whose flanking positions are not adjacent (`c.10_20insA`) and ranges that are
+  reversed or empty (`c.12_10del`, `c.10_10del`),
+- overlapping or repeated variants, variants that cancel each other out, other prefixes
+  (`g.`, `n.`, `o.`, `r.`, `p.`), uncertain positions, intronic positions, ambiguous
+  nucleotides and legacy forms (`5del`, `del.5`),
+- positions outside of the selected gene, numbers longer than 12 digits, and inserted
+  sequences or repeats longer than the genome itself.
+
+**Normalisation.** Whatever form the input takes, the reports show the HGVS description:
+deletions, duplications and insertions are shifted to the most 3' position (of the plus strand
+for `m.`, of the coding strand for `c.`, which on the complement strand can name different
+nucleotides); an insertion copying the sequence directly 5' of it is a duplication; two or more
+extra tandem copies are a repeat (in `c.` only for 3n units); a single replaced nucleotide is a
+substitution and a replaced reverse complement an inversion. The 3' shift may leave the gene
+(e.g. `NC_012920.1(MT-ATP8):c.*1del`) and crosses the origin of the circular genome.
+
+Several variants of one allele are normalised together, so their combined effect never changes:
+
+- variants that touch in some equivalent placement change consecutive nucleotides, so they
+  are one variant: `AAA` > `GA` is `c.4_5delinsG` whether it was entered as
+  `c.[4A>G;5del]` or `c.[4A>G;6del]`, and `c.[9del;10del]` is `c.9_10del`; two
+  substitutions one nucleotide apart inside one codon are also one deletion-insertion,
+- variants separated by at least one unchanged nucleotide in every placement are described
+  individually: `g.[3C>G;7dup]`, not `g.3_4delinsGGT` (consultation SVD-WG010, which proposed
+  merging nearby variants, was rejected),
+- deletions and insertions are then shifted 3', never past the next variant,
+- variants merged in either `m.` or `c.` are reported in one row, while each level keeps its
+  own description (the 3' rule follows the strand).
+
+**Protein consequences** are predicted from the variant protein, read from the variant CDS
+followed by the poly(A) tail of the processed mitochondrial mRNA, so a `T--`/`TA-` stop codon
+completed by polyadenylation can be lost (`p.(Ter262GlnextTer?)`). Reports list the variants
+one by one and together as one allele (`m.[...]`, `c.[...]`, `p.[(...;...)]`). In the `p.`
+allele, changes of consecutive amino acids are one deletion-insertion, nothing is described
+after a change that ends the protein (nonsense, or a frameshift up to its new stop codon), and
+any change of the start codon makes the whole allele `p.(Met1?)`.
 
 ## 🛠️ Development
 
@@ -379,6 +476,8 @@ snp-analyser/
 │   ├── analyser_cli/          # Core analysis library
 │   │   ├── analyser.py        # Main Analyser class
 │   │   ├── cds_annotation.py  # GenBank CDS qualifiers and NCBI genetic codes
+│   │   ├── hgvs.py            # HGVS m./c. parsing, validation and normalisation
+│   │   ├── hgvs_protein.py    # Predicted HGVS p. consequences
 │   │   ├── protein_alignment.py # Original vs mutated translation alignment
 │   │   ├── reporter.py        # Report generation
 │   │   ├── data_manager.py    # Genome data management
@@ -577,9 +676,11 @@ analyser = Analyser(sequence, transl_table=2)     # Vertebrate Mitochondrial
 ## ⚠️ Important Notes
 
 ### Coordinate Systems
-- **CLI/Python API**: Uses **1-based, gene-relative** positions
-- **Web Interface Input**: Uses **1-based, genome-absolute** positions (automatically converted)
-- **Position 1** refers to the first nucleotide in the sequence
+- **CLI/Python API**: Uses **1-based** positions in the gene sequence in transcription order
+- **Web Interface Input**: Uses HGVS `m.` (genome, plus strand) or `c.` (coding DNA) descriptions,
+  converted through the GenBank location of the gene, including `complement(...)` locations
+- **Position 1** refers to the first nucleotide in the sequence, i.e. `c.1`, the first nucleotide
+  of the start codon
 
 ### Mutation Processing
 - Mutations are applied in **reverse order** by position to maintain correct indices
@@ -589,7 +690,9 @@ analyser = Analyser(sequence, transl_table=2)     # Vertebrate Mitochondrial
 
 ### Translation Behavior
 - Only complete codons are translated
-- If mutated sequence length is not divisible by 3, remaining bases are truncated
+- If mutated sequence length is not divisible by 3, remaining bases are truncated, except for a
+  stop codon completed by polyadenylation (`/transl_except`), which is completed with the poly(A)
+  tail from the mutated bases and can therefore turn into a sense codon
 
 ### Limitations
 - Currently supports only DNA sequences (not RNA)

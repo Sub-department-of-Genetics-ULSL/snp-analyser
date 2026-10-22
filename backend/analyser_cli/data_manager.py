@@ -9,6 +9,7 @@ from .variables import (
     ENTREZ_EMAIL,
 )
 from .cds_annotation import genetic_code_name, read_cds_annotation
+from .hgvs import HGVS_VERSION, ReferenceContext
 
 
 class DataManager:
@@ -58,11 +59,27 @@ class DataManager:
         genome = self.get_genome(latin_name=latin_name)
         feature = self._find_gene_feature(genome, gene)
         annotation = read_cds_annotation(feature)
+        context = ReferenceContext.from_genbank(genome, feature)
 
         return {
-            "sequence": str(feature.extract(genome.seq)),
+            # The CDS in transcription order: reverse complemented for complement(a..b).
+            "sequence": context.cds_sequence,
+            # Lowest and highest genome position covered by the gene, whatever its strand.
             "startInGenome": int(feature.location.start) + 1,
             "endInGenome": int(feature.location.end),
+            # +1: c.1 is startInGenome and c. numbering runs up the genome;
+            # -1 (complement): c.1 is endInGenome and c. numbering runs down the genome.
+            "strand": context.strand,
+            "cdsStartInGenome": context.first_genome_position,
+            "cdsEndInGenome": context.last_genome_position,
+            "genomeLength": context.genome_length,
+            "circular": context.circular,
+            "accession": context.accession,
+            "symbol": context.symbol,
+            "proteinId": context.protein_id,
+            "cdsComplete": context.cds_complete,
+            "codingNumberingAvailable": context.c_available,
+            "hgvsVersion": HGVS_VERSION,
             "translTable": annotation.transl_table,
             "translTableName": genetic_code_name(annotation.transl_table),
             "codonStart": annotation.codon_start,
@@ -76,6 +93,11 @@ class DataManager:
             ],
             "ncbiTranslation": annotation.translation,
         }
+
+    def get_reference_context(self, latin_name: str, gene: str) -> ReferenceContext:
+        """HGVS coordinates (m., c., p.) of one gene of an organism."""
+        genome = self.get_genome(latin_name=latin_name)
+        return ReferenceContext.from_genbank(genome, self._find_gene_feature(genome, gene))
 
     @staticmethod
     def _find_gene_feature(genome: SeqRecord.SeqRecord, gene: str):

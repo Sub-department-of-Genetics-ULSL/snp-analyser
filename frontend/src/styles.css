@@ -466,3 +466,29 @@ select:focus, input:focus, textarea:focus {
     min-height: 420px;
   }
 }
+
+#mutations-list .variant-descriptions {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+
+#mutations-list .variant-primary {
+  overflow-wrap: anywhere;
+}
+
+#mutations-list .variant-detail {
+  color: var(--text-secondary);
+  font-size: 0.8rem;
+  overflow-wrap: anywhere;
+}
+
+#mutations-list .variant-pending {
+  opacity: 0.7;
+}
+
+#mutations-list .variant-error .variant-primary,
+#mutations-list .variant-error > span {
+  color: var(--accent-danger);
+}

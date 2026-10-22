@@ -4,14 +4,30 @@ import PositionMarker from './components/PositionMarker';
 import Tooltip from './components/Tooltip';
 import { api } from './api';
 import {
-  applyTextMutations,
+  applyVariantsToVisual,
   buildVisualRows,
-  computeMutations,
-  revertMutation
+  computeEditBlocks,
+  rawDescription,
+  revertBlocks,
+  splitDescriptions
 } from './lib/mutations';
 
 const POLL_INTERVAL_MS = 3000;
 const RULER_INTERVAL = 10;
+const DESCRIBE_DELAY_MS = 250;
+const EMPTY_GENE_INFO = {
+  startInGenome: 0,
+  endInGenome: 0,
+  strand: 1,
+  genomeLength: 0,
+  circular: false,
+  accession: '',
+  symbol: '',
+  proteinId: '',
+  codingNumberingAvailable: true,
+  sequenceLength: 0
+};
+const EMPTY_DESCRIPTION = { key: '', variants: [], errors: [], allele: {}, failure: '' };
 
 export default function App() {
   const [organisms, setOrganisms] = useState({});
@@ -20,7 +36,7 @@ export default function App() {
   const [gene, setGene] = useState('');
 
   const [baseSequence, setBaseSequence] = useState('');
-  const [startGenomePos, setStartGenomePos] = useState(0);
+  const [geneInfo, setGeneInfo] = useState(EMPTY_GENE_INFO);
   const [geneticCode, setGeneticCode] = useState('');
   const [visualRefArray, setVisualRefArray] = useState([]);
   const [visualEditArray, setVisualEditArray] = useState([]);
@@ -30,10 +46,12 @@ export default function App() {
   const [isGeneratingReport, setIsGeneratingReport] = useState(false);
   const [isLoadingGenes, setIsLoadingGenes] = useState(false);
   const [isLoadingSequence, setIsLoadingSequence] = useState(false);
-  const [activePage, setActivePage] = useState('queue');
+  const [activePage, setActivePage] = useState('editor');
   const [reportJobs, setReportJobs] = useState([]);
   const [queueError, setQueueError] = useState('');
   const pendingWindowsRef = useRef(new Map());
+  const [described, setDescribed] = useState(EMPTY_DESCRIPTION);
+  const [isApplyingText, setIsApplyingText] = useState(false);
 
   const [menuState, setMenuState] = useState({
     visible: false,
@@ -178,22 +196,66 @@ export default function App() {
   }, [menuState.visible]);
 
   const visualRows = useMemo(
-    () => buildVisualRows(visualRefArray, visualEditArray, startGenomePos, RULER_INTERVAL),
-    [visualRefArray, visualEditArray, startGenomePos]
+    () => buildVisualRows(visualRefArray, visualEditArray, geneInfo, RULER_INTERVAL),
+    [visualRefArray, visualEditArray, geneInfo]
   );
 
-  const mutations = useMemo(
-    () => computeMutations(visualRefArray, visualEditArray, startGenomePos),
-    [visualRefArray, visualEditArray, startGenomePos]
+  const editBlocks = useMemo(
+    () => computeEditBlocks(visualRefArray, visualEditArray),
+    [visualRefArray, visualEditArray]
   );
+
+  const rawDescriptions = useMemo(
+    () => editBlocks.map((block) => rawDescription(block, geneInfo)),
+    [editBlocks, geneInfo]
+  );
+  const descriptionKey = `${animal}|${gene}|${rawDescriptions.join(' ')}`;
+  const isDescriptionCurrent = described.key === descriptionKey;
+
+  // The backend owns the HGVS rules (3' shifting, dup, repeats, merging, m./c./p.), so
+  // every edit is described there; the editor only knows where the user changed bases.
+  useEffect(() => {
+    if (!animal || !gene || rawDescriptions.length === 0) {
+      setDescribed({ ...EMPTY_DESCRIPTION, key: descriptionKey });
+      return undefined;
+    }
+
+    let cancelled = false;
+    const timer = window.setTimeout(async () => {
+      try {
+        const result = await api.describeVariants(animal, gene, rawDescriptions);
+        if (!cancelled) {
+          setDescribed({
+            key: descriptionKey,
+            variants: result.variants || [],
+            errors: result.errors || [],
+            allele: result.allele || {},
+            failure: ''
+          });
+        }
+      } catch (error) {
+        if (!cancelled) {
+          setDescribed({ ...EMPTY_DESCRIPTION, key: descriptionKey, failure: error.message });
+        }
+      }
+    }, DESCRIBE_DELAY_MS);
+
+    return () => {
+      cancelled = true;
+      window.clearTimeout(timer);
+    };
+  }, [descriptionKey]);
 
   const hasLoadedSequence = baseSequence.length > 0;
+  // Without a complete CDS there is no c. numbering, only the position in the gene.
+  const geneLabel = geneInfo.codingNumberingAvailable ? 'c.' : '#';
 
   const loadGenes = async (latinName) => {
     setAnimal(latinName);
     setGene('');
     setGenes([]);
     setBaseSequence('');
+    setGeneInfo(EMPTY_GENE_INFO);
     setGeneticCode('');
     setVisualRefArray([]);
     setVisualEditArray([]);
@@ -216,6 +278,10 @@ export default function App() {
 
   const loadSequence = async (latinName, selectedGene) => {
     setGene(selectedGene);
+    // Edits of the previous gene must never be described against the new one.
+    setBaseSequence('');
+    setVisualRefArray([]);
+    setVisualEditArray([]);
 
     if (!latinName || !selectedGene) {
       setGeneticCode('');
@@ -226,11 +292,21 @@ export default function App() {
     try {
       const data = await api.getGeneSequence(latinName, selectedGene);
       const sequence = data.sequence || '';
-      const start = Number(data.startInGenome || 0);
 
       scrollTopRef.current = 0;
       setBaseSequence(sequence);
-      setStartGenomePos(start);
+      setGeneInfo({
+        startInGenome: Number(data.startInGenome || 0),
+        endInGenome: Number(data.endInGenome || 0),
+        strand: Number(data.strand || 1),
+        genomeLength: Number(data.genomeLength || 0),
+        circular: Boolean(data.circular),
+        accession: data.accession || '',
+        symbol: data.symbol || selectedGene,
+        proteinId: data.proteinId || '',
+        codingNumberingAvailable: data.codingNumberingAvailable !== false,
+        sequenceLength: sequence.length
+      });
       setGeneticCode(
         data.translTableName ? `${data.translTableName} (transl_table=${data.translTable})` : ''
       );
@@ -239,6 +315,7 @@ export default function App() {
     } catch (error) {
       console.error(error);
       setBaseSequence('');
+      setGeneInfo(EMPTY_GENE_INFO);
       setGeneticCode('');
       setVisualRefArray([]);
       setVisualEditArray([]);
@@ -286,35 +363,55 @@ export default function App() {
     setMenuState((prev) => ({ ...prev, visible: false, index: null }));
   };
 
-  const handleRevertMutation = (mutString) => {
-    const reverted = revertMutation(mutString, visualRefArray, visualEditArray, startGenomePos);
+  const handleRevertInputs = (inputs) => {
+    const blocks = inputs.map((index) => editBlocks[index]).filter(Boolean);
+    const reverted = revertBlocks(visualRefArray, visualEditArray, blocks);
     setVisualRefArray(reverted.visualRefArray);
     setVisualEditArray(reverted.visualEditArray);
   };
 
-  const handleApplyTextMutations = () => {
-    if (!textInputMutations || !baseSequence) {
+  const handleApplyTextMutations = async () => {
+    const descriptions = splitDescriptions(textInputMutations);
+    if (descriptions.length === 0 || !baseSequence) {
       return;
     }
 
-    const updated = applyTextMutations(baseSequence, textInputMutations, startGenomePos);
-    setVisualRefArray(updated.visualRefArray);
-    setVisualEditArray(updated.visualEditArray);
+    setIsApplyingText(true);
+    try {
+      const result = await api.describeVariants(animal, gene, descriptions);
+      const updated = applyVariantsToVisual(baseSequence, result.variants || []);
+      setVisualRefArray(updated.visualRefArray);
+      setVisualEditArray(updated.visualEditArray);
 
-    if (updated.errors.length > 0) {
-      alert(
-        `Skipped ${updated.errors.length} entry/entries: ${updated.errors.join(', ')}\n\n` +
-          'Only c. (gene-relative) and m. (genome-absolute) coordinates are accepted, ' +
-          'e.g. m.5367C>T or c.10_12del. Positions must fall inside the selected gene.'
-      );
+      const errors = result.errors || [];
+      if (errors.length > 0) {
+        alert(
+          `Skipped ${errors.length} entry/entries:\n\n` +
+            errors.map((error) => `- ${error.message}`).join('\n')
+        );
+      }
+    } catch (error) {
+      console.error(error);
+      alert(error.message);
+    } finally {
+      setIsApplyingText(false);
     }
   };
 
   const generateReport = async () => {
-    if (!animal || !gene || mutations.length === 0) {
+    if (!animal || !gene || editBlocks.length === 0) {
       alert('No mutations.');
       return;
     }
+    if (!isDescriptionCurrent) {
+      alert('The HGVS descriptions are still being checked, please try again in a moment.');
+      return;
+    }
+    if (described.failure || described.errors.length > 0) {
+      alert('Fix the invalid variants listed under Detected Mutations first.');
+      return;
+    }
+    const mutations = described.variants.map((variant) => variant.m);
 
     const pendingWindow = window.open('', '_blank');
     if (pendingWindow) {
@@ -337,7 +434,7 @@ export default function App() {
       if (pendingWindow) {
         pendingWindow.document.write('<pre style="font-family: monospace; padding: 12px;">Failed to queue report.</pre>');
       }
-      alert('Failed to queue report.');
+      alert(`Failed to queue report: ${error.message}`);
     } finally {
       setIsGeneratingReport(false);
     }
@@ -437,6 +534,7 @@ export default function App() {
                         <PositionMarker
                           genomePosition={row.rulerGenome}
                           genePosition={row.rulerGene}
+                          geneLabel={geneLabel}
                         />
                       ) : null
                     }
@@ -445,6 +543,7 @@ export default function App() {
                         refGeneDisplay={row.refGeneDisplay}
                         refGenomeDisplay={row.refGenomeDisplay}
                         newPosDisplay={row.newPosDisplay}
+                        geneLabel={geneLabel}
                       />
                     }
                   />
@@ -469,6 +568,7 @@ export default function App() {
                           <PositionMarker
                             genomePosition={row.rulerGenome}
                             genePosition={row.rulerGene}
+                            geneLabel={geneLabel}
                           />
                         ) : null
                       }
@@ -477,6 +577,7 @@ export default function App() {
                           refGeneDisplay={row.refGeneDisplay}
                           refGenomeDisplay={row.refGenomeDisplay}
                           newPosDisplay={row.newPosDisplay}
+                          geneLabel={geneLabel}
                         />
                       }
                     />
@@ -526,38 +627,99 @@ export default function App() {
             <hr style={{ borderColor: 'var(--border-color)', borderStyle: 'dashed' }} />
 
             <div className="control-group">
-              <label>3. Detected Mutations</label>
+              <label>3. Detected Mutations (HGVS)</label>
               <ul id="mutations-list">
-                {mutations.length === 0 && <li>No mutations detected.</li>}
-                {mutations.map((mutation) => (
-                  <li key={mutation}>
-                    <span>{mutation}</span>
-                    <button
-                      className="remove-mut-btn"
-                      title="Revert this mutation"
-                      onClick={() => handleRevertMutation(mutation)}
-                    >
-                      &times;
-                    </button>
+                {editBlocks.length === 0 && <li>No mutations detected.</li>}
+                {editBlocks.length > 0 && !isDescriptionCurrent &&
+                  rawDescriptions.map((description, index) => (
+                    <li key={`raw-${index}`} className="variant-pending">
+                      <span>{description}</span>
+                      <span className="variant-detail">checking...</span>
+                    </li>
+                  ))}
+                {isDescriptionCurrent && described.failure && (
+                  <li className="variant-error">
+                    <span>Could not check the variants: {described.failure}</span>
                   </li>
-                ))}
+                )}
+                {isDescriptionCurrent &&
+                  described.variants.map((variant) => (
+                    <li key={variant.m}>
+                      <div className="variant-descriptions">
+                        <span className="variant-primary">{variant.m}</span>
+                        {variant.c && <span className="variant-detail">{variant.c}</span>}
+                        {variant.p && <span className="variant-detail">{variant.p}</span>}
+                        <span className="variant-detail">{variant.consequence}</span>
+                      </div>
+                      <button
+                        className="remove-mut-btn"
+                        title="Revert this mutation"
+                        onClick={() => handleRevertInputs(variant.inputs)}
+                      >
+                        &times;
+                      </button>
+                    </li>
+                  ))}
+                {isDescriptionCurrent &&
+                  described.errors.map((error) => (
+                    <li key={`error-${error.inputs.join('-')}`} className="variant-error">
+                      <div className="variant-descriptions">
+                        <span className="variant-primary">{error.texts.join(', ')}</span>
+                        <span className="variant-detail">{error.message}</span>
+                      </div>
+                      <button
+                        className="remove-mut-btn"
+                        title="Revert this mutation"
+                        onClick={() => handleRevertInputs(error.inputs)}
+                      >
+                        &times;
+                      </button>
+                    </li>
+                  ))}
               </ul>
+              {isDescriptionCurrent && described.variants.length > 1 && (
+                <p className="info-text">
+                  All variants together (one allele):<br />
+                  <code>{described.allele.m}</code>
+                  {described.allele.c && (
+                    <>
+                      <br />
+                      <code>{described.allele.c}</code>
+                    </>
+                  )}
+                  {described.allele.p && (
+                    <>
+                      <br />
+                      <code>{described.allele.p}</code>
+                    </>
+                  )}
+                </p>
+              )}
             </div>
 
             <div className="control-group">
               <label htmlFor="text-input-mutations">Batch Input (Paste text, will remove already present mutations)</label>
               <textarea
                 id="text-input-mutations"
-                placeholder="e.g. m.5367C>T, c.10_12del, m.21_22insAG, c.100_101delinsTT"
+                placeholder="e.g. NC_012920.1:m.8993T>G, c.10_12del, c.21_22insAG, m.[3243A>G;3260A>G]"
                 value={textInputMutations}
                 onChange={(event) => setTextInputMutations(event.target.value)}
               />
               <p className="info-text">
-                Only <code>m.</code> (absolute position in the mitochondrial genome) and{' '}
-                <code>c.</code> (position relative to the gene start) coordinates are accepted.
+                HGVS DNA descriptions (version 21.1) with an <code>m.</code> (mitochondrial genome{geneInfo.accession ? ` ${geneInfo.accession}` : ''},
+                plus strand) or <code>c.</code> (coding DNA, <code>c.1</code> is the first nucleotide of the start codon)
+                prefix. The reference sequence may be given, e.g.{' '}
+                <code>{geneInfo.accession || 'NC_012920.1'}:m.</code> or{' '}
+                <code>{`${geneInfo.accession || 'NC_012920.1'}(${geneInfo.symbol || 'MT-ATP6'})`}:c.</code>.
+                {geneInfo.strand === -1 && ' This gene lies on the complement strand: c. numbering runs down the genome and m. descriptions use the complementary bases.'}
+                {!geneInfo.codingNumberingAvailable && ' The CDS of this gene is incomplete, so only m. positions can be used.'}
               </p>
-              <button style={{ marginTop: '8px' }} onClick={handleApplyTextMutations}>
-                Apply Text Mutations
+              <button
+                style={{ marginTop: '8px' }}
+                disabled={!hasLoadedSequence || isApplyingText}
+                onClick={handleApplyTextMutations}
+              >
+                {isApplyingText ? 'Checking...' : 'Apply Text Mutations'}
               </button>
             </div>
 

@@ -28,6 +28,16 @@ async function parseJson(response, errorLabel) {
   return response.json();
 }
 
+/** The `detail` message FastAPI sends with an error response, if there is one. */
+async function errorDetail(response, fallback) {
+  try {
+    const body = await response.json();
+    return typeof body.detail === 'string' ? body.detail : fallback;
+  } catch {
+    return fallback;
+  }
+}
+
 export const api = {
   async getOrganisms() {
     const response = await fetch(toApiUrl('/organisms'));
@@ -78,7 +88,23 @@ export const api = {
       })
     });
 
-    return parseJson(response, 'Failed to create report job');
+    if (!response.ok) {
+      throw new Error(await errorDetail(response, 'Failed to create report job'));
+    }
+    return response.json();
+  },
+
+  async describeVariants(organism, gene, mutations) {
+    const response = await fetch(toApiUrl('/hgvs/describe'), {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ organism, gene, mutations })
+    });
+
+    if (!response.ok) {
+      throw new Error(await errorDetail(response, 'Failed to check the HGVS descriptions'));
+    }
+    return response.json();
   },
 
   async getReportJobs() {

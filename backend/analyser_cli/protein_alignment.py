@@ -86,11 +86,14 @@ class ProteinAlignment:
 
     @property
     def original_length(self) -> int:
-        return len(self.original.replace(GAP, ""))
+        """Amino acids of the original peptide, up to its first stop codon."""
+        return _peptide_length(self.original)
 
     @property
     def mutated_length(self) -> int:
-        return len(self.mutated.replace(GAP, ""))
+        """Amino acids of the mutated peptide: translation ends at the first stop codon,
+        even when the displayed translation goes on past a premature one."""
+        return _peptide_length(self.mutated)
 
     def lines(
         self,
@@ -147,9 +150,11 @@ def align_translations(
     ``frameshift_residue`` is the 1-based residue of the original translation whose codon
     is the first one read in another frame. The residues before it are still homologous
     and are aligned normally, while the tail after it is anchored and padded, because the
-    two tails are different peptides rather than shifted copies of each other. Pass ``1``
-    when a frameshift is known but its position is not. A translation cut short by a
-    premature stop codon is detected from the sequences themselves.
+    two tails are different peptides rather than shifted copies of each other. When the
+    shifted codons still encode the same residues the divergence moves to the first
+    amino acid that changes, which is where HGVS starts a frameshift. Pass ``1`` when a
+    frameshift is known but its position is not. A translation cut short by a premature
+    stop codon is detected from the sequences themselves.
     """
     original = str(original or "")
     mutated = str(mutated or "")
@@ -182,6 +187,11 @@ def group_residues(residues: str, group_size: int = DEFAULT_GROUP_SIZE) -> str:
     return " ".join(
         residues[start:start + group_size] for start in range(0, len(residues), group_size)
     )
+
+
+def _peptide_length(translation: str) -> int:
+    """Residues before the first stop codon; a stop codon is not an amino acid."""
+    return len(translation.replace(GAP, "").split(STOP, 1)[0])
 
 
 def _advance(chunk: str, position: int) -> tuple[int | None, int]:
@@ -217,9 +227,22 @@ def _is_truncation(original: str, mutated: str) -> bool:
 
 
 def _split_at_frameshift(original: str, mutated: str, residue: int) -> ProteinAlignment:
-    """Align the homologous residues before the frameshift and anchor the tails after it."""
+    """Align the homologous residues before the frameshift and anchor the tails after it.
+
+    HGVS starts a frameshift at the first amino acid it changes, which can come after the
+    first codon read in another frame when that codon still encodes the same residue, so
+    residues the two tails share at their start stay part of the homologous head.
+    """
     original_head = original[:residue - 1]
-    mutated_head = mutated[:_matching_prefix_length(original_head, mutated)]
+    mutated_head_length = _matching_prefix_length(original_head, mutated)
+    original_tail = original[len(original_head):]
+    # Keep at least one residue in the original tail, where the divergence is reported.
+    shared = min(
+        _common_prefix_length(original_tail, mutated[mutated_head_length:]),
+        len(original_tail) - 1,
+    )
+    original_head = original[:len(original_head) + shared]
+    mutated_head = mutated[:mutated_head_length + shared]
     aligned_head = _normalise_gaps(*_align(original_head, mutated_head))
 
     return _anchor_tails(

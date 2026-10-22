@@ -119,8 +119,9 @@ class Analyser:
         A 3' terminal exception marks a stop codon completed by polyadenylation of the
         mRNA, so it follows the new end of the sequence - but only while that end is
         still a partial codon. Once an indel makes the last codon complete it is read
-        from the genetic code again. An internal exception is only kept when no indel
-        moved it.
+        from the genetic code again. The partial codon is completed with the same
+        poly(A) tail, so a variant inside it can turn the stop codon into a sense codon.
+        An internal exception is only kept when no indel moved it.
         """
         length_change = len(mutated_sequence) - len(self.input_sequence)
         coding_length = max(len(mutated_sequence) - self.coding_offset, 0)
@@ -134,15 +135,25 @@ class Analyser:
                 continue
 
             if partial_bases:
+                amino_acid = exception.amino_acid
+                if amino_acid == "*":
+                    amino_acid = self._poly_a_completed(str(mutated_sequence)[-partial_bases:])
                 exceptions.append(
                     TranslationException(
                         len(mutated_sequence) - partial_bases,
                         len(mutated_sequence),
-                        exception.amino_acid,
+                        amino_acid,
                     )
                 )
 
         return tuple(exceptions)
+
+    def _poly_a_completed(self, partial_codon: str) -> str:
+        """Amino acid of a 1-2 base codon completed by the poly(A) tail of the mRNA."""
+        codon = partial_codon.upper() + "A" * (3 - len(partial_codon))
+        if codon in self.codon_table.stop_codons:
+            return "*"
+        return self.codon_table.forward_table.get(codon, "X")
 
     def apply_mutations(self, mutations: list[dict]):
         """Apply mutations to input sequence and store result.

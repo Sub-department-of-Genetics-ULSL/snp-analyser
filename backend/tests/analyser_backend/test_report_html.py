@@ -1,3 +1,4 @@
+import pytest
 from Bio.Seq import Seq
 from Bio.SeqFeature import FeatureLocation, SeqFeature
 from Bio.SeqRecord import SeqRecord
@@ -58,11 +59,11 @@ def variant(protein: ProteinConsequence | None = None) -> VariantDescription:
     )
 
 
-def render(original, mutated, result=None, context=None):
+def render(original, mutated, result=None, context=None, organism="dog"):
     context = context or make_context()
     result = result or DescriptionResult(variants=(variant(),), errors=())
     return report._build_report_html(
-        "dog",
+        organism,
         "ND2",
         "Detailed report",
         context,
@@ -236,3 +237,27 @@ def test_parse_report_html_reads_the_hgvs_descriptions_back():
     job = report._parse_report_html("job-2", html_report, "http://127.0.0.1:8000")
 
     assert job["mutations"] == ["NC_002008.4:m.3914A>G", "NC_002008.4:m.3920_3921del"]
+
+
+@pytest.mark.parametrize(
+    "name, expected",
+    [
+        ("homo_sapiens", "Homo sapiens"),
+        ("drosophila_melanogaster", "Drosophila melanogaster"),
+        ("Homo sapiens", "Homo sapiens"),
+        ("SUS_SCROFA", "Sus scrofa"),
+    ],
+)
+def test_latin_names_are_written_with_a_capital_genus(name, expected):
+    assert report.format_latin_name(name) == expected
+
+
+def test_report_shows_the_latin_name_in_italics_and_reads_it_back():
+    html_report = render("MKQFG*", "MEQFG*", organism="canis_lupus_familiaris")
+
+    assert "SNP Analyser Report - Canis lupus familiaris / ND2" in html_report
+    assert "<strong>Organism:</strong> <em>Canis lupus familiaris</em></div>" in html_report
+
+    job = report._parse_report_html("job-1", html_report, "http://127.0.0.1:8000")
+
+    assert job["organism"] == "Canis lupus familiaris"

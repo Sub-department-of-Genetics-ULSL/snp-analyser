@@ -29,6 +29,14 @@ const EMPTY_GENE_INFO = {
 };
 const EMPTY_DESCRIPTION = { key: '', variants: [], errors: [], allele: {}, failure: '' };
 
+// A binomial name as biologists write it: 'homo_sapiens' -> 'Homo sapiens'.
+const formatLatinName = (name) => {
+  const words = String(name ?? '').replaceAll('_', ' ').trim().split(/\s+/).filter(Boolean);
+  if (!words.length) return '';
+  const [genus, ...rest] = words;
+  return [genus[0].toUpperCase() + genus.slice(1).toLowerCase(), ...rest.map((word) => word.toLowerCase())].join(' ');
+};
+
 export default function App() {
   const [organisms, setOrganisms] = useState({});
   const [animal, setAnimal] = useState('');
@@ -495,7 +503,13 @@ export default function App() {
                 {reportJobs.map((job) => (
                   <tr key={job.id}>
                     <td>{new Date(job.created_at).toLocaleString()}</td>
-                    <td>{job.organism}</td>
+                    <td>
+                      {formatLatinName(job.organism).includes(' ') ? (
+                        <em>{formatLatinName(job.organism)}</em>
+                      ) : (
+                        formatLatinName(job.organism)
+                      )}
+                    </td>
                     <td>{job.gene}</td>
                     <td className={`status-${job.status}`}>{job.status}</td>
                     <td>{(job.mutations || []).length}</td>
@@ -593,7 +607,7 @@ export default function App() {
                 <option value="">{Object.keys(organisms).length ? 'Select an animal' : 'Loading...'}</option>
                 {Object.entries(organisms).map(([displayName, latinName]) => (
                   <option key={latinName} value={latinName}>
-                    {`${displayName.toUpperCase()} ${String(latinName).replaceAll('_', ' ')}`}
+                    {`${displayName.toUpperCase()} ${formatLatinName(latinName)}`}
                   </option>
                 ))}
               </select>

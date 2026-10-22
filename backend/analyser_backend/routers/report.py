@@ -70,6 +70,14 @@ def get_helixfold_startup_status() -> tuple[bool, str]:
     return False, reason
 
 
+def format_latin_name(name: str) -> str:
+    """A binomial name as biologists write it: 'homo_sapiens' -> 'Homo sapiens'."""
+    words = name.replace("_", " ").split()
+    if not words:
+        return name
+    return " ".join([words[0].capitalize(), *(word.lower() for word in words[1:])])
+
+
 def get_reference_context(organism: str, gene: str) -> ReferenceContext:
     """HGVS coordinates of a gene; ``LookupError`` when the organism or gene is unknown."""
     try:
@@ -388,9 +396,9 @@ def _build_report_html(
 
     return _render_report_template(
         {
-            "TITLE_ORGANISM": html.escape(organism),
+            "TITLE_ORGANISM": html.escape(format_latin_name(organism)),
             "TITLE_GENE": html.escape(gene),
-            "ORGANISM": html.escape(organism),
+            "ORGANISM": f"<em>{html.escape(format_latin_name(organism))}</em>",
             "GENE": html.escape(gene if gene == context.symbol else f"{gene} ({context.symbol})"),
             "REFERENCE_SEQUENCE": html.escape(context.accession),
             "PROTEIN_REFERENCE": html.escape(context.protein_id or "n/a"),
@@ -574,7 +582,7 @@ def _load_report_jobs_from_db(report_base_url: str) -> dict[str, dict]:
 
 
 def _parse_report_html(job_id: str, html_text: str, report_base_url: str) -> dict | None:
-    organism_match = re.search(r"<strong>Organism:</strong>\s*([^<]+)</div>", html_text)
+    organism_match = re.search(r"<strong>Organism:</strong>\s*(?:<em>)?([^<]+)(?:</em>)?</div>", html_text)
     gene_match = re.search(r"<strong>Gene:</strong>\s*([^<]+)</div>", html_text)
     generated_match = re.search(r"<strong>Generated:</strong>\s*([^<]+)</div>", html_text)
     if organism_match is None and gene_match is None:
